@@ -17,8 +17,9 @@
 **[Join the sp00nznet recomp Discord](https://discord.gg/CRpzGWZFcu)** — the
 community hub for sp00nznet's recomp projects.
 
-**Current version: v0.1.0 (September 2026).** Toolkit, not yet a port. See
-[Status](#status) for exactly what runs.
+**Current version: v0.2.0 (September 2026).** The pipeline has now been run
+end to end against a real Lindbergh title. See [Status](#status) for the
+numbers.
 
 ---
 
@@ -51,6 +52,7 @@ from that game's ELF.
     +----------------------+   The payload is AES-encrypted under a key that
     |  2. Decrypt          |   lives in the cabinet. Not this toolkit's job -
     +----------------------+   bring a game tree you can already read.
+               |                              NOT OURS
                |
                v
     +----------------------+   PT_LOADs, symbols, PLT imports, DT_NEEDED.
@@ -91,29 +93,79 @@ The subclass is 30 lines. Everything else the lifter already did.
 
 ## Status
 
-**The toolkit runs end to end. No title has been ported.** Those are different
-sentences and the difference is worth being precise about.
+**The whole pipeline has been run against a real game binary.** *Let's Go
+Jungle*'s `lgj_final` — 12.7 MB, `ET_EXEC`, `EM_386`, entry `0x08072d70` — goes
+in, and 1.7 million lines of C come out.
 
 | | |
 |---|---|
 | Disc carving | **Works.** Verified against *Let's Go Jungle*, *House of the Dead 4*, *Initial D 4*, *Virtua Tennis 3* — four dumps, both filesystems found in each, payload extracted byte-exact. |
-| ELF32 parsing | **Works.** Segments, symbols, PLT imports, `DT_NEEDED`. |
-| Lifting | **Works.** An i386 ELF goes in, compilable C comes out, with PLT calls named and syscalls routed. Checked by `tools/recomp/test_driver.py`, which builds a real ELF and reads the C back. |
-| Runtime | **Partial.** Image mapping, the initial stack, the startup syscalls, the dispatch table and the import boundary all build and run 32-bit. The libraries — glibc, OpenGL, sound, JVS — are empty. |
-| A game | **Blocked.** Every Lindbergh dump we have is encrypted; see below. |
+| ELF32 parsing | **Works.** 2 `PT_LOAD`s, **31,752** sized `STT_FUNC` symbols, **406** PLT imports, 13 `DT_NEEDED` libraries. |
+| Lifting | **Works.** All 31,752 functions lift in **28 seconds**, producing 1,702,616 lines of C. Not one function failed outright. |
+| Instruction coverage | **90.6%.** 160,820 of the emitted lines are `/* TODO */ abort()`. The gap is one family — see below. |
+| Runtime | **Partial.** Image mapping, initial stack, startup syscalls, dispatch and the import boundary build and run 32-bit. The 406 imports have no bodies yet. |
 
-### The blocker, stated plainly
+### The binary is not stripped
 
-All 30-odd Lindbergh dumps to hand are encrypted disc images. The disc carves
-cleanly — that part is solved and tested — but `disk0.img` and everything
-beside it comes out as ciphertext, under a key that lives in the cabinet.
-[docs/disc-format.md](docs/disc-format.md) documents exactly what was measured,
-including the evidence that two of the four discs share one key.
+Worth saying on its own, because it changes what this project is. `lgj_final`
+ships its full symbol table: **31,752 function symbols, with names and sizes**.
+There is no function-discovery problem, no bounds file to export from Ghidra,
+no heuristic carving. The ELF says where every function starts and how long it
+is, and the lifter takes it from there.
 
-**This toolkit does not decrypt Lindbergh media and is not going to.** Bring a
-game tree you can already read — a mountable `disk0.img`, or the install off a
-board's own hard disc — the same way every other project here expects you to
-bring your own disc or ROM. From there, everything above is waiting.
+```
+$ py -3.11 -m tools elf lgj_final
+entry      0x08072d70
+image      0x08048000 + 0xc23f44
+segments   2 PT_LOAD
+functions  31752 sized STT_FUNC symbols
+imports    406 PLT stubs
+  needs    libCg.so          libCgGL.so        libxerces-c.so.26
+  needs    libGLU.so.1       libGL.so.1        libsegaapi.so
+  needs    libpthread.so.0   libm.so.6         libgcc_s.so.1
+  needs    libc.so.6         libXext.so.6      libX11.so.6
+  needs    libdl.so.2
+```
+
+That import list is also the work plan, and it is shorter than it looks:
+stock glibc, stock OpenGL/GLU, stock X11, NVIDIA's Cg shader runtime, Xerces,
+and exactly one Sega library — `libsegaapi.so`, the sound API.
+
+### The gap is SSE, and almost nothing else
+
+Every unlifted instruction across all 31,752 functions, by family:
+
+| Family | Count | Share of gap |
+|---|---:|---:|
+| SSE scalar float — `movss` `mulss` `addss` `subss` `divss` `ucomiss` `cvt*ss*` | 141,081 | **87.7%** |
+| SSE packed / logical — `movaps` `xorps` `andps` `shufps` `mulps` | 8,966 | 5.6% |
+| `prefetcht0` and friends — semantically a no-op | 4,859 | 3.0% |
+| `cmovcc` | 3,435 | 2.1% |
+| MMX / SSE2 integer — `pxor` `movq` `pmaddwd` `paddd` | 1,591 | 1.0% |
+| x87 cases the FPU path misses | 699 | 0.4% |
+| everything else (`out`, `in`, `bt`, `lock`, …) | 189 | 0.1% |
+
+`movss` alone is 74,438 of them — 46% of the whole gap.
+
+This is exactly the predicted failure: the lifter came from Pentium III targets
+and *Let's Go Jungle* is a Pentium 4 title that keeps its floats in XMM
+registers. Three mechanical pieces of work — scalar SSE, `cmovcc`, and making
+the prefetches no-ops — close **92.8%** of the gap between them.
+
+**That work belongs upstream in
+[pcrecomp](https://github.com/sp00nznet/pcrecomp)**, in `lift32_cpu.py`, not
+here. Every PC-era target benefits, and forking the lifter to fix one game is
+how you end up maintaining four of them.
+
+### On the discs
+
+The encrypted-disc finding still stands and is still worth reading —
+[docs/disc-format.md](docs/disc-format.md) records what was measured, including
+the evidence that *Let's Go Jungle* and *Initial D 4* share a key. **This
+toolkit does not decrypt Lindbergh media.** Bring a game tree you can already
+read; preservation projects have published clean dumps of many Lindbergh
+titles, taken from original DVDs and cabinet hard discs with the keys their
+owners had.
 
 ## Use
 
