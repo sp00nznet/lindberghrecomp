@@ -413,6 +413,42 @@ static void h_umoddi3(CPU *c)
     c->edx = (uint32_t)(r >> 32);
 }
 
+/* ---- the CRT entry point ----
+ *
+ * glibc's i386 _start pushes seven arguments and calls this:
+ *
+ *   __libc_start_main(main, argc, argv, init, fini, rtld_fini, stack_end)
+ *
+ * and it never returns - the process ends by this calling exit(). `init` is
+ * __libc_csu_init, which walks .init_array and runs every C++ static
+ * constructor in the binary; for a game built on Xerces and Cg that is where
+ * most of the work before main() happens, and getting it wrong means main()
+ * runs against uninitialised globals rather than crashing honestly.
+ */
+static void h_libc_start_main(CPU *c)
+{
+    uint32_t main_fn = A32(0), argc = A32(1), argv = A32(2);
+    uint32_t init = A32(3), fini = A32(4);
+
+    /* envp follows argv's NULL terminator on the stack the kernel built. */
+    uint32_t envp = argv + (argc + 1) * 4;
+    uint32_t args[3] = { argc, argv, envp };
+
+    if (init) {
+        fprintf(stderr, "[crt] __libc_csu_init at %#010x\n", init);
+        guest_call(c, init, args, 3);
+    }
+
+    fprintf(stderr, "[crt] main at %#010x (argc=%u)\n", main_fn, argc);
+    uint32_t rc = guest_call(c, main_fn, args, 3);
+    fprintf(stderr, "[crt] main returned %d\n", (int)rc);
+
+    if (fini)
+        guest_call(c, fini, NULL, 0);
+
+    exit((int)rc);
+}
+
 void hle_register_libc(void)
 {
     ctype_init();
@@ -464,6 +500,7 @@ void hle_register_libc(void)
     hle_bind("__ctype_tolower_loc", h_ctype_tolower_loc);
     hle_bind("__ctype_toupper_loc", h_ctype_toupper_loc);
     hle_bind("__errno_location", h_errno_location);
+    hle_bind("__libc_start_main", h_libc_start_main);
     hle_bind("__divdi3", h_divdi3);
     hle_bind("__udivdi3", h_udivdi3);
     hle_bind("__umoddi3", h_umoddi3);

@@ -15,6 +15,7 @@ What the rest of the pipeline needs from here:
                               has to provide (libGL, libc, libsegaapi, ...)
 """
 
+import bisect
 import struct
 from dataclasses import dataclass
 
@@ -116,23 +117,51 @@ class Elf32:
         raise ValueError("VA %#x is not in any PT_LOAD" % va)
 
     def functions(self):
-        """{addr: (size, name)} for every sized STT_FUNC symbol.
+        """{addr: (size, name)} for every STT_FUNC symbol.
 
-        A stripped game ELF has no .symtab and this comes back nearly empty -
-        that is the expected case, and the driver then wants a funcs.txt from
-        Ghidra/IDA instead. Sizeless symbols are dropped: the lifter carves by
-        byte range, and a zero-length range lifts to an empty function."""
-        out = {}
+        Symbols with no size get bounds synthesised from the next function
+        symbol, clamped to the end of their section. That is not a nicety: the
+        handful of functions an ELF carries with size 0 are the hand-written
+        assembly out of crt1.o - `_start`, `call_gmon_start`, `frame_dummy` -
+        because assembly rarely bothers with a .size directive. They are also
+        the entire boot path, so dropping them leaves a binary whose entry
+        point does not exist.
+
+        A stripped game ELF has no .symtab and this comes back nearly empty.
+        That is the expected case for some titles, and the driver then wants a
+        funcs.txt from Ghidra or IDA instead."""
+        syms = []
         for sh in self.sections:
             if sh.type not in (SHT_SYMTAB, SHT_DYNSYM) or not sh.entsize:
                 continue
             strtab = self.sections[sh.link].offset
             for off in range(sh.offset, sh.offset + sh.size, sh.entsize):
                 name_off, value, size, info = struct.unpack_from("<IIIB", self.data, off)
-                if (info & 0xF) != STT_FUNC or not size or not value:
+                if (info & 0xF) != STT_FUNC or not value:
                     continue
-                out[value] = (size, self._cstr(strtab + name_off))
+                syms.append((value, size, self._cstr(strtab + name_off)))
+
+        bounds = sorted({v for v, _s, _n in syms})
+        out = {}
+        for value, size, name in syms:
+            if not size:
+                i = bisect.bisect_right(bounds, value)
+                nxt = bounds[i] if i < len(bounds) else 0
+                end = self._section_end(value)
+                if nxt and (not end or nxt < end):
+                    end = nxt
+                size = end - value if end > value else 0
+                if not size:
+                    continue
+            out[value] = (size, name)
         return out
+
+    def _section_end(self, va):
+        """End VA of the allocated section containing va, or 0."""
+        for sh in self.sections:
+            if sh.addr and sh.addr <= va < sh.addr + sh.size:
+                return sh.addr + sh.size
+        return 0
 
     def needed(self):
         """DT_NEEDED shared libraries - the HLE surface the runtime must cover."""

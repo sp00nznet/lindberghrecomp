@@ -48,6 +48,8 @@ def build_elf(path):
     code = (b"\x55"                          # push ebp
             b"\x89\xe5"                      # mov  ebp, esp
             + b"\xe8" + struct.pack("<i", stub_va - (call_site + 5))
+            + b"\xe8\x00\x00\x00\x00"        # call +0  (the PIC get-PC idiom)
+            + b"\x5b"                        # pop  ebx
             + b"\xb8\x01\x00\x00\x00"        # mov  eax, 1
             b"\xcd\x80"                      # int  0x80
             b"\x5d"                          # pop  ebp
@@ -128,7 +130,8 @@ def main():
 
         for want in ("void L_%08X(CPU *c)" % text_va,   # lifted at its real VA
                      "hle_call(c, HLE_write);",         # PLT call became named
-                     "linux_syscall(c);"):              # int 0x80 became syscall
+                     "linux_syscall(c);",
+                     "get-PC, no callee"):              # int 0x80 became syscall
             assert want in c, "missing %r in:\n%s" % (want, c)
         assert "abort()" not in c, "something did not lift:\n%s" % c
 

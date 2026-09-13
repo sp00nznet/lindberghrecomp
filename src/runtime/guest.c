@@ -26,7 +26,9 @@
 
 #define PT_LOAD   1
 #define PAGE      0x1000u
-#define STACK_TOP 0xBFFFF000u     /* where Linux/i386 puts it */
+/* Windows reserves address space in 64 KB regions whatever the page size is. */
+#define GRAN      0x10000u
+#define STACK_TOP 0xBFFF0000u     /* about where Linux/i386 puts it, 64 KB aligned */
 #define STACK_SZ  (8u << 20)
 
 static uint32_t g_entry;
@@ -73,26 +75,45 @@ int guest_load(const char *elf_path, int argc, char **argv)
     uint32_t phoff = rd32le(img + 28);
     unsigned phentsize = img[42] | (img[43] << 8);
     unsigned phnum     = img[44] | (img[45] << 8);
+    /* Reserve the whole image span in ONE call, then copy the segments into
+     * it. Reserving each PT_LOAD separately looks right and is not: Windows
+     * rounds a reservation's REGION up to the 64 KB allocation granularity,
+     * not to pages. This game's two segments are page-adjacent at 0x08681000,
+     * so reserving the first claims everything up to 0x08690000 and the second
+     * reserve then fails on address space that is already taken - which is
+     * exactly what it did. */
+    uint32_t lo = 0xFFFFFFFFu, hi = 0;
+    for (unsigned i = 0; i < phnum; i++) {
+        const unsigned char *ph = img + phoff + (size_t)i * phentsize;
+        if (rd32le(ph) != PT_LOAD) continue;
+        uint32_t vaddr = rd32le(ph + 8), memsz = rd32le(ph + 20);
+        if ((vaddr & ~(PAGE - 1)) < lo) lo = vaddr & ~(PAGE - 1);
+        if (vaddr + memsz > hi) hi = vaddr + memsz;
+    }
+    if (lo > hi) {
+        fprintf(stderr, "%s: no PT_LOAD segments\n", elf_path);
+        free(img); return -1;
+    }
+    lo &= ~(GRAN - 1);
+    hi = (hi + GRAN - 1) & ~(GRAN - 1);
+
+    if (!reserve(lo, hi - lo)) {
+        fprintf(stderr, "cannot map the image at %#x..%#x - is this a 32-bit build?\n", lo, hi);
+        free(img); return -1;
+    }
+    memset((void *)(uintptr_t)lo, 0, hi - lo);        /* .bss, and the gaps */
 
     for (unsigned i = 0; i < phnum; i++) {
         const unsigned char *ph = img + phoff + (size_t)i * phentsize;
         if (rd32le(ph) != PT_LOAD) continue;
-        uint32_t off = rd32le(ph + 4), vaddr = rd32le(ph + 8);
-        uint32_t filesz = rd32le(ph + 16), memsz = rd32le(ph + 20);
-
-        uint32_t lo = vaddr & ~(PAGE - 1);
-        uint32_t hi = (vaddr + memsz + PAGE - 1) & ~(PAGE - 1);
-        if (!reserve(lo, hi - lo)) {
-            fprintf(stderr, "cannot map %#x..%#x - is this a 32-bit build?\n", lo, hi);
-            free(img); return -1;
-        }
-        memset((void *)(uintptr_t)lo, 0, hi - lo);          /* .bss */
-        memcpy((void *)(uintptr_t)vaddr, img + off, filesz);
-        if (hi > g_brk) g_brk = hi;                          /* heap starts past the image */
+        memcpy((void *)(uintptr_t)rd32le(ph + 8),     /* p_vaddr  */
+               img + rd32le(ph + 4),                  /* p_offset */
+               rd32le(ph + 16));                      /* p_filesz */
     }
+    g_brk = hi;                                       /* the heap starts past the image */
     free(img);
 
-    if (!reserve(STACK_TOP - STACK_SZ, STACK_SZ)) {
+    if (!reserve((STACK_TOP - STACK_SZ) & ~(GRAN - 1), STACK_SZ)) {
         fprintf(stderr, "cannot map the guest stack\n"); return -1;
     }
     memset((void *)(uintptr_t)(STACK_TOP - STACK_SZ), 0, STACK_SZ);

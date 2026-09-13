@@ -55,7 +55,15 @@ function(lindbergh_runtime target generated_dir)
         target_compile_options(${target} PRIVATE
             /W1 /wd4244 /wd4267 /wd4018 /wd4102 /wd4101 /wd4146 /wd4996)
         # No ASLR: the image is mapped at the addresses it was linked for.
-        target_link_options(${target} PRIVATE /DYNAMICBASE:NO /STACK:8388608)
+        #
+        # LARGEADDRESSAWARE because the guest is a Linux process and Linux
+        # gives one 3 GB of user address space - it puts the stack up at
+        # 0xBFFF0000. A 32-bit Windows process gets 2 GB by default, so that
+        # address simply does not exist and the stack cannot be mapped. With
+        # the flag set, a 32-bit process on 64-bit Windows gets the full 4 GB
+        # and the guest can be laid out where it expects to be.
+        target_link_options(${target} PRIVATE
+            /DYNAMICBASE:NO /LARGEADDRESSAWARE /STACK:8388608)
     endif()
 endfunction()
 

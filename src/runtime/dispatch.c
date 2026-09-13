@@ -59,3 +59,28 @@ void dispatch_jmp(CPU *c, uint32_t va)
      * straight to our caller's caller. Same table, no return address pushed. */
     dispatch(c, va);
 }
+
+/* ---- calling back into guest code ----
+ *
+ * Needed whenever the host has to run something the game owns: the CRT's
+ * constructors, a thread's start routine, a qsort comparator, an atexit
+ * handler, a GL callback. The shape is the one a lifted function expects on
+ * entry - arguments pushed right to left, then a return slot for its own `ret`
+ * to pop - and cdecl says the caller cleans up, which is what restoring esp
+ * afterwards does.
+ *
+ * The return address pushed is deliberately a value no code maps to. A lifted
+ * `ret` only does `esp += 4; return;` and never jumps to it, so it is never
+ * read; if it ever shows up in a diagnostic, something has gone wrong in a way
+ * worth noticing.
+ */
+uint32_t guest_call(CPU *c, uint32_t fn, const uint32_t *args, int nargs)
+{
+    uint32_t saved = c->esp;
+    for (int i = nargs - 1; i >= 0; i--)
+        push32(c, args[i]);
+    push32(c, 0xDEADBEEFu);
+    dispatch(c, fn);
+    c->esp = saved;
+    return c->eax;
+}

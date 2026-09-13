@@ -109,6 +109,10 @@ const char *hle_name(HleId id);
 void dispatch(CPU *c, uint32_t va);
 void dispatch_jmp(CPU *c, uint32_t va);
 
+/* Run a guest function from host code and return its eax. Arguments are
+ * pushed cdecl-style and esp is restored afterwards. */
+uint32_t guest_call(CPU *c, uint32_t fn, const uint32_t *args, int nargs);
+
 #ifdef __cplusplus
 }
 #endif
