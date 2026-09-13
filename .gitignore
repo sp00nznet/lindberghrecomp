@@ -1,0 +1,34 @@
+build/
+build-*/
+.vs/
+.vscode/
+*.obj
+*.lib
+*.a
+*.exe
+*.pdb
+*.ilk
+*.suo
+*.user
+CMakeSettings.json
+out/
+__pycache__/
+*.pyc
+
+# Generated per title, never committed.
+gen/
+recomp_funcs.c
+recomp_funcs_list.h
+recomp_imports.h
+
+# Game media. Bring your own; none of it belongs here.
+*.iso
+*.img
+*.dat
+*.elf
+*.set
+
+# Agent scratch - never committed.
+CLAUDE.md
+.claude/
+AGENTS.md

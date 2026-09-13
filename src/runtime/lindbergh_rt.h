@@ -1,0 +1,81 @@
+/*
+ * lindbergh_rt.h - runtime for statically recompiled Lindbergh games.
+ *
+ * The CPU model is pcrecomp's (pcrecomp/runtime/recomp32_cpu/cpu.h): an
+ * explicit `CPU *c` threaded through every lifted function, flat memory where
+ * a register holds a real 32-bit host address. That means the host must be a
+ * 32-bit build - the game's segments are mapped at the virtual addresses it
+ * was linked for, and on Linux/i386 those are down at 0x08048000.
+ *
+ * What this header adds is the Lindbergh side of the boundary: a Linux/i386
+ * process to be, a kernel to call, and a set of shared libraries the board
+ * provided that we have to provide instead.
+ */
+#ifndef LINDBERGH_RT_H
+#define LINDBERGH_RT_H
+
+#include "cpu.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* ---- guest process ---- */
+
+/* Map an ELF's PT_LOADs at their original virtual addresses and build the
+ * initial stack (argc/argv/envp/auxv) the way the kernel does, so the game's
+ * _start finds what it expects. Returns 0, or -1 with the reason on stderr. */
+int  guest_load(const char *elf_path, int argc, char **argv);
+
+/* Entry point VA from the ELF header, valid after guest_load. */
+uint32_t guest_entry(void);
+
+/* Initialise a CPU to enter the guest: esp at the built stack, everything
+ * else zero, exactly as Linux hands a fresh process to _start. */
+void guest_init_cpu(CPU *c);
+
+/* Guest break, for the brk/sbrk syscalls. */
+uint32_t guest_brk(uint32_t newbrk);
+
+/* ---- kernel ---- */
+
+/* `int 0x80` and the vDSO's sysenter both land here. Number in eax, arguments
+ * in ebx/ecx/edx/esi/edi/ebp, result back into eax (negative errno on
+ * failure), per the Linux i386 calling convention. */
+void linux_syscall(CPU *c);
+
+/* ---- shared libraries ---- */
+
+/* Every PLT import in the game gets an HLE_* id; recomp_imports.h is
+ * generated from the ELF and lists them. */
+#include "recomp_imports.h"
+
+#define HLE_ENUM(id, name) id,
+typedef enum { HLE_IMPORTS(HLE_ENUM) HLE_COUNT } HleId;
+#undef HLE_ENUM
+
+/* A library function's body. Reads its arguments off the guest stack and
+ * leaves the return value in eax, the cdecl the ELF was built for. */
+typedef void (*HleHandler)(CPU *c);
+
+/* One slot per import. A game project fills in the ones it needs; the toolkit
+ * ships the ones every title shares. A slot left null aborts naming itself,
+ * which is the to-do list. */
+extern HleHandler g_hle_handlers[];
+
+void hle_call(CPU *c, HleId id);
+
+/* Name for an id, for diagnostics. */
+const char *hle_name(HleId id);
+
+/* ---- lifted code ---- */
+
+/* Address -> lifted function. Generated: recomp_funcs_list.h is the X-macro
+ * of every VA that lifted, and recomp_dispatch.c turns it into a table. */
+void dispatch(CPU *c, uint32_t va);
+void dispatch_jmp(CPU *c, uint32_t va);
+
+#ifdef __cplusplus
+}
+#endif
+#endif /* LINDBERGH_RT_H */
