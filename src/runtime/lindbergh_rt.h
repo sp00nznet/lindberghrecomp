@@ -14,6 +14,10 @@
 #ifndef LINDBERGH_RT_H
 #define LINDBERGH_RT_H
 
+/* Generated code calls abort() wherever an instruction did not lift, so the
+ * declaration has to travel with the header the generated code includes. */
+#include <stdlib.h>
+
 #include "cpu.h"
 
 #ifdef __cplusplus

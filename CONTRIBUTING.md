@@ -6,25 +6,26 @@ gets a real title closer to running is welcome.
 ## Where the gaps are
 
 Real, scoped, measured against *Let's Go Jungle*'s `lgj_final` — 31,752
-functions, all of which lift. None of them need permission to start.
+functions, all of which lift, at **99.91% instruction coverage**. None of them
+need permission to start.
 
-**Start here. `lift32_cpu.py` has no SSE**, and that is 87.7% of every
-unlifted instruction in a real Lindbergh title. The work is upstream in
-[pcrecomp](https://github.com/sp00nznet/pcrecomp), and it is the highest-value
-thing anyone can do for this project:
+### Done, for reference
 
-| Upstream job | Count in one game | Share of the gap | Difficulty |
-|---|---:|---:|---|
-| **Scalar SSE** — `movss` `mulss` `addss` `subss` `divss` `ucomiss` `cvtsi2ss` `cvttss2si` | 141,081 | **87.7%** | Medium once, mechanical after. The CPU struct needs XMM storage; the ops are one C line each. |
-| **`prefetcht0`/`nta`** | 4,859 | 3.0% | Trivial — they are semantically no-ops. Half an hour. |
-| **`cmovcc`** | 3,435 | 2.1% | Trivial — the condition helpers already exist for `Jcc`. |
-| **SSE packed** — `movaps` `xorps` `andps` `shufps` | 8,966 | 5.6% | Medium. Needs the XMM storage from the scalar job first. |
-| **MMX / SSE2 integer** — `pxor` `movq` `pmaddwd` `paddd` | 1,591 | 1.0% | Medium. |
-| **x87 cases the FPU path misses** | 699 | 0.4% | Small each. |
+Scalar SSE was 87.7% of the gap when this project started. It is now in
+[pcrecomp](https://github.com/sp00nznet/pcrecomp)'s `lift32_cpu.py` along with
+`cmovcc` and the prefetch hints, which took coverage from 90.55% to 99.91%.
+That is the shape a good contribution here takes: measure first, fix it in the
+one place that serves every target, leave a test behind.
 
-The first three together close 92.8% of the gap.
+### Still open in the lifter (upstream, in pcrecomp)
 
-Then, in this repo:
+| Job | Count in one game | Difficulty |
+|---|---:|---|
+| **x87 cases the FPU path misses** | 699 | Small each. The `fpu()` method is already there to extend. |
+| **MMX** — `movq` `pmaddwd` `paddd` `paddsw` `pshufw` `psrad` | 537 | Medium. A second register file, aliased onto the x87 stack the way hardware does it. The routing already refuses to mistake these for SSE. |
+| **Packed SSE arithmetic** — `shufps` `mulps` `addps` | 231 | Medium. Deliberately left out rather than guessed at: per-lane code, and a plausible wrong lane is worse than an honest `abort()`. The XMM storage is already there. |
+
+### Still open here
 
 | Area | What is missing | Difficulty |
 |---|---|---|

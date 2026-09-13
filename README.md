@@ -17,9 +17,9 @@
 **[Join the sp00nznet recomp Discord](https://discord.gg/CRpzGWZFcu)** — the
 community hub for sp00nznet's recomp projects.
 
-**Current version: v0.2.0 (September 2026).** The pipeline has now been run
-end to end against a real Lindbergh title. See [Status](#status) for the
-numbers.
+**Current version: v0.3.0 (September 2026).** The pipeline runs end to end
+against a real Lindbergh title at **99.91% instruction coverage**. See
+[Status](#status) for the numbers.
 
 ---
 
@@ -102,7 +102,8 @@ in, and 1.7 million lines of C come out.
 | Disc carving | **Works.** Verified against *Let's Go Jungle*, *House of the Dead 4*, *Initial D 4*, *Virtua Tennis 3* — four dumps, both filesystems found in each, payload extracted byte-exact. |
 | ELF32 parsing | **Works.** 2 `PT_LOAD`s, **31,752** sized `STT_FUNC` symbols, **406** PLT imports, 13 `DT_NEEDED` libraries. |
 | Lifting | **Works.** All 31,752 functions lift in **28 seconds**, producing 1,702,616 lines of C. Not one function failed outright. |
-| Instruction coverage | **90.6%.** 160,820 of the emitted lines are `/* TODO */ abort()`. The gap is one family — see below. |
+| Instruction coverage | **99.91%.** 1,558 of 1,702,616 emitted lines are `/* TODO */ abort()`, down from 160,820 before SSE landed upstream. |
+| Compiles | **Yes.** The 600 most SSE-dense functions — 85,402 SSE instructions — build to a clean object with MSVC, no warnings. |
 | Runtime | **Partial.** Image mapping, initial stack, startup syscalls, dispatch and the import boundary build and run 32-bit. The 406 imports have no bodies yet. |
 
 ### The binary is not stripped
@@ -131,31 +132,39 @@ That import list is also the work plan, and it is shorter than it looks:
 stock glibc, stock OpenGL/GLU, stock X11, NVIDIA's Cg shader runtime, Xerces,
 and exactly one Sega library — `libsegaapi.so`, the sound API.
 
-### The gap is SSE, and almost nothing else
+### The gap was SSE. It is now closed
 
-Every unlifted instruction across all 31,752 functions, by family:
+Measuring the first full lift, every unlifted instruction fell into one family:
+scalar SSE was **87.7%** of the gap and `movss` alone was 46% of it. That is
+the predicted failure — the lifter came from Pentium III targets and *Let's Go
+Jungle* is a Pentium 4 title that keeps its floats in XMM registers.
 
-| Family | Count | Share of gap |
+So it was fixed **upstream in
+[pcrecomp](https://github.com/sp00nznet/pcrecomp)**, where it belongs: one x86
+lifter, and every PC-era target gets SSE out of it. `lift32_cpu.py` now covers
+scalar single and double arithmetic, `sqrt`, `min`/`max`, both kinds of
+compare, the conversions, 128-bit moves and the bitwise ops — plus `cmovcc`,
+and the prefetch hints as the no-ops they are.
+
+| | before | after |
 |---|---:|---:|
-| SSE scalar float — `movss` `mulss` `addss` `subss` `divss` `ucomiss` `cvt*ss*` | 141,081 | **87.7%** |
-| SSE packed / logical — `movaps` `xorps` `andps` `shufps` `mulps` | 8,966 | 5.6% |
-| `prefetcht0` and friends — semantically a no-op | 4,859 | 3.0% |
-| `cmovcc` | 3,435 | 2.1% |
-| MMX / SSE2 integer — `pxor` `movq` `pmaddwd` `paddd` | 1,591 | 1.0% |
-| x87 cases the FPU path misses | 699 | 0.4% |
-| everything else (`out`, `in`, `bt`, `lock`, …) | 189 | 0.1% |
+| Instruction coverage | 90.55% | **99.91%** |
+| `/* TODO */ abort()` lines | 160,820 | **1,558** |
 
-`movss` alone is 74,438 of them — 46% of the whole gap.
+What is still unlifted, in full:
 
-This is exactly the predicted failure: the lifter came from Pentium III targets
-and *Let's Go Jungle* is a Pentium 4 title that keeps its floats in XMM
-registers. Three mechanical pieces of work — scalar SSE, `cmovcc`, and making
-the prefetches no-ops — close **92.8%** of the gap between them.
+| | count |
+|---|---:|
+| x87 cases the FPU path misses | 699 |
+| MMX `movq` (a separate register file, not SSE) | 192 |
+| MMX integer — `pmaddwd` `paddd` `paddsw` `pshufw` `psrad` … | 345 |
+| packed float — `shufps` `mulps` `addps` | 231 |
+| `out` / `in` — port I/O, which userspace has no business doing | 83 |
+| `lock` `bts` `bt` `pushal` `pinsrw` `movntps` | 8 |
 
-**That work belongs upstream in
-[pcrecomp](https://github.com/sp00nznet/pcrecomp)**, in `lift32_cpu.py`, not
-here. Every PC-era target benefits, and forking the lifter to fix one game is
-how you end up maintaining four of them.
+Packed arithmetic was left out deliberately rather than guessed at: it needs
+per-lane code, and a plausible-looking wrong lane is worse than an honest
+`abort()`. MMX is a second register file and a second job.
 
 ### On the discs
 
