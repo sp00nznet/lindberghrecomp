@@ -69,6 +69,36 @@ extern HleHandler g_hle_handlers[];
 
 void hle_call(CPU *c, HleId id);
 
+/* Give a named import a body. Binding by name and not by HLE_* id is what
+ * keeps a handler file title-agnostic: HLE_memcpy only exists as an enumerator
+ * if *this* game imports memcpy, so a file that said `g_hle_handlers[HLE_memcpy]`
+ * would fail to compile against a game that does not. Returns 0 when the game
+ * does not import that name, which is not an error - most do not import most
+ * of them. */
+int hle_bind(const char *name, HleHandler fn);
+
+/* Bind every handler the toolkit ships. A game project calls this once, then
+ * binds its own on top. */
+void hle_register_all(void);
+void hle_register_libc(void);
+
+/* ---- the guest side of a call ----
+ *
+ * The lifter turns `call <plt stub>` into hle_call() and pushes no return
+ * address, so on entry esp points straight at argument 0. cdecl, so the
+ * handler must not move esp - the caller's own `add esp, N` does that.
+ */
+#define A32(n)   rd32(c->esp + 4u * (unsigned)(n))
+#define APTR(n)  ((void *)(uintptr_t)A32(n))
+#define ASTR(n)  ((char *)(uintptr_t)A32(n))
+#define AI32(n)  ((int32_t)A32(n))
+#define RET(v)   (c->eax = (uint32_t)(uintptr_t)(v))
+
+/* A function returning float or double returns it in st(0) on i386 SysV, not
+ * in an XMM register - the caller does `fstp` to take it. Every math import
+ * below goes back this way. */
+#define RETF(v)  fpush(c, (double)(v))
+
 /* Name for an id, for diagnostics. */
 const char *hle_name(HleId id);
 

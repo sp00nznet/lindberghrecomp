@@ -41,6 +41,7 @@ function(lindbergh_runtime target generated_dir)
         "${LINDBERGH_RUNTIME_DIR}/guest.c"
         "${LINDBERGH_RUNTIME_DIR}/syscall.c"
         "${LINDBERGH_RUNTIME_DIR}/hle.c"
+        "${LINDBERGH_RUNTIME_DIR}/hle_libc.c"
         "${LINDBERGH_RUNTIME_DIR}/dispatch.c"
     )
     target_include_directories(${target} PRIVATE

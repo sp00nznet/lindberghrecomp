@@ -20,6 +20,7 @@ from tools.elf.elf32 import Elf32
 from tools.recomp.driver import recompile
 
 BASE = 0x08048000
+BS = chr(92)
 
 
 class Builder:
@@ -123,7 +124,7 @@ def main():
         done, imports = recompile(elf_path, out)
         assert done == [text_va], done
         assert imports == ["write"], imports
-        c = open(os.path.join(out, "recomp_funcs.c")).read()
+        c = open(os.path.join(out, "recomp_funcs_0000.c")).read()
 
         for want in ("void L_%08X(CPU *c)" % text_va,   # lifted at its real VA
                      "hle_call(c, HLE_write);",         # PLT call became named
@@ -131,6 +132,17 @@ def main():
             assert want in c, "missing %r in:\n%s" % (want, c)
         assert "abort()" not in c, "something did not lift:\n%s" % c
 
+        # Both generated headers are one long X-macro held together by line
+        # continuations. A substring check passes happily while every
+        # continuation is the two characters backslash-n instead of a
+        # backslash ending the line - which is a header no compiler accepts,
+        # and which shipped once already because nothing here looked.
+        for fn in ("recomp_imports.h", "recomp_funcs_list.h"):
+            text = open(os.path.join(out, fn)).read()
+            assert BS + "n" not in text, fn + ": literal backslash-n, not a line continuation"
+            for line in text.splitlines()[:-1]:
+                if line.startswith("    X("):
+                    assert line.endswith(BS), fn + ": unterminated continuation: " + line
         imports_h = open(os.path.join(out, "recomp_imports.h")).read()
         assert 'X(HLE_write, "write")' in imports_h, imports_h
 

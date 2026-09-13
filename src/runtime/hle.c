@@ -13,6 +13,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "lindbergh_rt.h"
 
@@ -26,6 +27,18 @@ const char *hle_name(HleId id)
 }
 
 HleHandler g_hle_handlers[HLE_COUNT];
+
+int hle_bind(const char *name, HleHandler fn)
+{
+    for (unsigned i = 0; i < HLE_COUNT; i++)
+        if (strcmp(g_names[i], name) == 0) { g_hle_handlers[i] = fn; return 1; }
+    return 0;   /* this game does not import it - nothing to bind, not a fault */
+}
+
+void hle_register_all(void)
+{
+    hle_register_libc();
+}
 
 void hle_call(CPU *c, HleId id)
 {
