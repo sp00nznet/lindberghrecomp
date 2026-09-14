@@ -43,6 +43,7 @@ typedef struct {
  * file's own body findable inside the preprocessed whole. */
 static char *strip_code(const char *src, size_t len)
 {
+    if (len == 0) len = strlen(src);
     char *out = (char *)malloc(len + 1);
     if (!out) return NULL;
     size_t o = 0;
@@ -90,6 +91,29 @@ static char *read_all(const char *path, size_t *len_out)
  * sits beside it. Depth-limited because the tree is shallow by construction
  * (shader/Cg/{vs,ps,inc}) and a runaway walk during startup is worse than a
  * missed shader. */
+/* A shader's own code: everything after its last #include.
+ *
+ * Includes expand in place, so the preprocessed source the engine hands over
+ * is [expanded includes][this file's own code]. That tail is what identifies
+ * the shader - the part before it is shared by all of them, which is why
+ * matching on the whole file found the wrong program nearly every time.
+ *
+ * Returns a pointer into src; strip_code is called on it with len 0 meaning
+ * "to the terminator". */
+static const char *own_code(const char *src, size_t len)
+{
+    const char *last = src;
+    for (const char *p = src; p && (size_t)(p - src) < len; ) {
+        const char *inc = strstr(p, "#include");
+        if (!inc || (size_t)(inc - src) >= len) break;
+        const char *nl = strchr(inc, '\n');
+        if (!nl) break;
+        last = nl + 1;
+        p = last;
+    }
+    return last;
+}
+
 /* cgc stamps its invocation into the output:
  *
  *   # command line args: -q -profile vp40 -entry main #define MODE_GL (1) ...
@@ -171,7 +195,7 @@ static void index_dir(const char *dir, int depth)
         char *src = read_all(full, &slen);
         char *cmp = read_all(asm_path, &clen);
         if (src && cmp && g_sh_n < MAX_SHADERS) {
-            g_sh[g_sh_n].body     = strip_code(src, slen);
+            g_sh[g_sh_n].body     = strip_code(own_code(src, slen), 0);
             g_sh[g_sh_n].defines  = asm_defines(cmp);
             g_sh[g_sh_n].compiled = cmp;
             g_sh_n++;
@@ -202,6 +226,24 @@ static void index_shaders(void)
     snprintf(dir, sizeof dir, "%s/extraShader", tea);
     index_dir(dir, 0);
     fprintf(stderr, "[cg] indexed %d precompiled shaders\n", g_sh_n);
+    {
+        /* How discriminating is the defines key actually? If most shaders
+         * share one value it is not a key at all, and the match degenerates to
+         * "first body that appears" - which for shaders sharing includes picks
+         * the wrong program and transforms every vertex off screen. */
+        int uniq = 0;
+        for (int i = 0; i < g_sh_n; i++) {
+            int seen = 0;
+            for (int j = 0; j < i; j++)
+                if (g_sh[j].defines && g_sh[i].defines &&
+                    strcmp(g_sh[i].defines, g_sh[j].defines) == 0) { seen = 1; break; }
+            if (!seen) uniq++;
+        }
+        fprintf(stderr, "[cg] %d distinct define sets across %d shaders\n", uniq, g_sh_n);
+        for (int i = 0; i < 2 && i < g_sh_n; i++)
+            fprintf(stderr, "[cg]   defines[%d] = %.90s\n", i,
+                    g_sh[i].defines ? g_sh[i].defines : "(none)");
+    }
 }
 
 #endif
@@ -244,7 +286,10 @@ static void h_cgCreateProgram(CPU *c)
             for (int i = 0; i < g_sh_n; i++) {
                 if (!g_sh[i].body || !g_sh[i].defines) continue;
                 if (strcmp(g_sh[i].defines, want_defs) != 0) continue;
-                if (g_sh[i].body[0] && strstr(whole, g_sh[i].body)) { hit = i; g_match_body++; break; }
+                size_t wl = strlen(whole), bl = strlen(g_sh[i].body);
+                if (bl && bl <= wl && memcmp(whole + wl - bl, g_sh[i].body, bl) == 0) {
+                    hit = i; g_match_body++; break;      /* its own code, at the end */
+                }
             }
             /* A define set that matches exactly one shader needs no second
              * opinion - and preprocessing can rewrite a body past recognition. */

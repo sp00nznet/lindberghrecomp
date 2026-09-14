@@ -454,6 +454,16 @@ static void inspect_frame(void)
 static void h_glXSwapBuffers(CPU *c)
 {
     inspect_frame();            /* before the swap: the back buffer is the frame */
+
+    /* Who presents the frame? Working back from the swap names the loop that
+     * should have composited into the default framebuffer just before it. */
+    if (g_frame == 5) {
+        const char *v = getenv("LINDBERGH_FBSTATS");
+        if (v && *v && *v != '0') {
+            fprintf(stderr, "[fb] present path:\n");
+            guest_backtrace(c);
+        }
+    }
     g_frame++;
     SwapBuffers(g_win.hdc);
     pump();

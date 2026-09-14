@@ -310,6 +310,12 @@ static void gl_program_string(CPU *c)
 }
 
 
+/* The render target currently bound, and the draws attributed to it. */
+static uint32_t g_cur_fbo;
+static unsigned g_begin_default, g_begin_fbo;
+static int      g_vp_on;      /* GL_VERTEX_PROGRAM_ARB currently enabled */
+static unsigned g_begin_vp, g_begin_ff;
+
 /* Render-to-texture, optionally refused.
  *
  * The engine draws its frame into framebuffer objects and composites at the
@@ -338,8 +344,130 @@ static void gl_bind_framebuffer(CPU *c)
     if (e && !e->fn) e->fn = gl_resolve(e->name);
     if (!e || !e->fn) { RET(0); return; }
 
-    uint32_t args[2] = { A32(0), no_fbo() ? 0u : A32(1) };
+    uint32_t fb = no_fbo() ? 0u : A32(1);
+    g_cur_fbo = fb;
+    uint32_t args[2] = { A32(0), fb };
     RET(gl_forward(e->fn, args, 2));
+}
+
+/* Draws, attributed to the render target that was bound when they happened.
+ *
+ * A frame that submits hundreds of primitives and shows nothing has either
+ * drawn them somewhere invisible or had them all discarded. Counting glBegin
+ * against the bound framebuffer separates those two: if the default
+ * framebuffer never receives a single primitive, the composite is missing
+ * rather than failing. */
+
+static void gl_begin_watch(CPU *c)
+{
+    static GlEntry *e;
+    if (!e) { for (unsigned i = 0; i < GL_COUNT; i++)
+                  if (strcmp(g_gl[i].name, "glBegin") == 0) e = &g_gl[i]; }
+    if (g_cur_fbo) g_begin_fbo++; else g_begin_default++;
+    if (g_vp_on) g_begin_vp++; else g_begin_ff++;
+    if (getenv("LINDBERGH_FBSTATS") && (g_begin_default + g_begin_fbo) % 20000 == 0)
+        fprintf(stderr, "[gl] glBegin: %u default / %u FBO | %u with vertex program, "
+                        "%u fixed-function\n", g_begin_default, g_begin_fbo,
+                g_begin_vp, g_begin_ff);
+    if (e) gl_dispatch(c, e);
+}
+
+/* The shader constants, as the guest computed them.
+ *
+ * The engine transforms entirely in vertex programs, so its matrices arrive
+ * here and nowhere else. If the lifted float maths that produced them is
+ * wrong, every vertex lands outside the clip volume and the screen stays black
+ * while every draw call still runs - which is the shape of the problem. A
+ * matrix of NaNs or of enormous numbers says so immediately. */
+static void gl_env_param_watch(CPU *c)
+{
+    static GlEntry *e;
+    static int shown;
+    if (!e) { for (unsigned i = 0; i < GL_COUNT; i++)
+                  if (strcmp(g_gl[i].name, "glProgramEnvParameter4fvARB") == 0) e = &g_gl[i]; }
+    const char *dbg = getenv("LINDBERGH_FBSTATS");
+    if (shown < 12 && dbg && *dbg && *dbg != '0') {
+        shown++;
+        const float *v = (const float *)(uintptr_t)A32(2);
+        if (v) fprintf(stderr, "[gl] env[%u] = %g %g %g %g\n", A32(1), v[0], v[1], v[2], v[3]);
+    }
+    if (e) gl_dispatch(c, e);
+}
+
+/* Culling and depth, optionally refused.
+ *
+ * Splits the two ways a submitted primitive disappears. If the screen lights
+ * up with LINDBERGH_NO_REJECT=1, the geometry was reaching the framebuffer and
+ * being thrown away by a face winding or a depth comparison. If it stays
+ * black, the geometry was never on screen to begin with and the transform is
+ * wrong. A diagnostic either way - a game drawn with no depth test is not a
+ * game. */
+static int no_reject(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *v = getenv("LINDBERGH_NO_REJECT");
+        cached = (v && *v && *v != '0') ? 1 : 0;
+    }
+    return cached;
+}
+
+static void gl_enable_filter(CPU *c)
+{
+    static GlEntry *e;
+    if (!e) { for (unsigned i = 0; i < GL_COUNT; i++)
+                  if (strcmp(g_gl[i].name, "glEnable") == 0) e = &g_gl[i]; }
+    if (e && !e->fn) e->fn = gl_resolve(e->name);
+    if (!e || !e->fn) { RET(0); return; }
+
+    uint32_t cap = A32(0);
+    if (cap == 0x8620) g_vp_on = 1;          /* GL_VERTEX_PROGRAM_ARB */
+
+    /* LINDBERGH_NO_FP=1 refuses the fragment programs, leaving fixed-function
+     * shading. Geometry that is correctly placed but shaded black is
+     * indistinguishable from geometry that was never on screen; this tells the
+     * two apart, because fixed-function will paint it in its vertex colours. */
+    if (cap == 0x8804) {                     /* GL_FRAGMENT_PROGRAM_ARB */
+        static int off = -1;
+        if (off < 0) { const char *v = getenv("LINDBERGH_NO_FP");
+                       off = (v && *v && *v != '0') ? 1 : 0; }
+        if (off) { RET(0); return; }
+    }
+    if (no_reject() && (cap == GL_CULL_FACE || cap == GL_DEPTH_TEST)) { RET(0); return; }
+    uint32_t args[1] = { cap };
+    RET(gl_forward(e->fn, args, 1));
+}
+
+/* glDisable, watched for the same reason glEnable is. */
+static void gl_disable_watch(CPU *c)
+{
+    static GlEntry *e;
+    if (!e) { for (unsigned i = 0; i < GL_COUNT; i++)
+                  if (strcmp(g_gl[i].name, "glDisable") == 0) e = &g_gl[i]; }
+    if (A32(0) == 0x8620) g_vp_on = 0;
+    if (e) gl_dispatch(c, e);
+}
+
+/* The vertex coordinates, as the guest computed them.
+ *
+ * Everything downstream has been measured and cleared, so the remaining
+ * unmeasured input is the geometry itself. The engine computes these in
+ * lifted code; if that arithmetic is wrong the vertices are simply somewhere
+ * else, and no amount of correct GL state will show them. */
+static void gl_vertex_watch(CPU *c)
+{
+    static GlEntry *e;
+    static int shown;
+    if (!e) { for (unsigned i = 0; i < GL_COUNT; i++)
+                  if (strcmp(g_gl[i].name, "glVertex3f") == 0) e = &g_gl[i]; }
+    const char *dbg = getenv("LINDBERGH_FBSTATS");
+    if (shown < 10 && dbg && *dbg && *dbg != '0') {
+        shown++;
+        float v[3];
+        for (int i = 0; i < 3; i++) { uint32_t b = A32(i); memcpy(&v[i], &b, 4); }
+        fprintf(stderr, "[gl] vertex %g %g %g\n", v[0], v[1], v[2]);
+    }
+    if (e) gl_dispatch(c, e);
 }
 
 void hle_register_gl(void)
@@ -349,6 +477,11 @@ void hle_register_gl(void)
         n += hle_bind(g_gl[i].name, g_gl_handlers[i]);
     hle_bind("glProgramStringARB", gl_program_string);   /* watched, see above */
     hle_bind("glBindFramebufferEXT", gl_bind_framebuffer);
+    hle_bind("glBegin", gl_begin_watch);
+    hle_bind("glVertex3f", gl_vertex_watch);
+    hle_bind("glEnable", gl_enable_filter);
+    hle_bind("glDisable", gl_disable_watch);
+    hle_bind("glProgramEnvParameter4fvARB", gl_env_param_watch);
     fprintf(stderr, "[gl] %d of %u entry points bound\n", n, (unsigned)GL_COUNT);
 }
 
