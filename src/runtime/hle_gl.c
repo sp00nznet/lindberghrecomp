@@ -363,6 +363,16 @@ static void gl_begin_watch(CPU *c)
     static GlEntry *e;
     if (!e) { for (unsigned i = 0; i < GL_COUNT; i++)
                   if (strcmp(g_gl[i].name, "glBegin") == 0) e = &g_gl[i]; }
+    {   /* Which thread is actually drawing? */
+        static unsigned long seen[4]; static int n;
+        unsigned long me = GetCurrentThreadId();
+        int known = 0;
+        for (int i = 0; i < n; i++) if (seen[i] == me) known = 1;
+        if (!known && n < 4) {
+            seen[n++] = me;
+            fprintf(stderr, "[gl] draws arriving from thread %lu\n", me);
+        }
+    }
     if (g_cur_fbo) g_begin_fbo++; else g_begin_default++;
     if (g_vp_on) g_begin_vp++; else g_begin_ff++;
     if (getenv("LINDBERGH_FBSTATS") && (g_begin_default + g_begin_fbo) % 20000 == 0)
@@ -421,7 +431,19 @@ static void gl_enable_filter(CPU *c)
     if (!e || !e->fn) { RET(0); return; }
 
     uint32_t cap = A32(0);
-    if (cap == 0x8620) g_vp_on = 1;          /* GL_VERTEX_PROGRAM_ARB */
+
+    /* LINDBERGH_NO_VP=1 refuses the vertex programs. Fixed-function then runs
+     * with the identity matrices this engine never sets - which is exactly
+     * right for geometry that is already in clip space, and wrong for
+     * everything else. A test of whether the vertices are where they should
+     * be, not a way to play. */
+    if (cap == 0x8620) {                     /* GL_VERTEX_PROGRAM_ARB */
+        static int off = -1;
+        if (off < 0) { const char *v = getenv("LINDBERGH_NO_VP");
+                       off = (v && *v && *v != '0') ? 1 : 0; }
+        if (off) { RET(0); return; }
+        g_vp_on = 1;
+    }
 
     /* LINDBERGH_NO_FP=1 refuses the fragment programs, leaving fixed-function
      * shading. Geometry that is correctly placed but shaded black is
@@ -433,7 +455,12 @@ static void gl_enable_filter(CPU *c)
                        off = (v && *v && *v != '0') ? 1 : 0; }
         if (off) { RET(0); return; }
     }
-    if (no_reject() && (cap == GL_CULL_FACE || cap == GL_DEPTH_TEST)) { RET(0); return; }
+    /* GL_SCISSOR_TEST belongs here too: glClear obeys it, so a stale scissor
+     * box left over from a small offscreen pass clips the whole frame - the
+     * clears included - and the result is indistinguishable from drawing
+     * nothing at all. */
+    if (no_reject() && (cap == GL_CULL_FACE || cap == GL_DEPTH_TEST ||
+                        cap == GL_SCISSOR_TEST || cap == GL_TEXTURE_2D)) { RET(0); return; }
     uint32_t args[1] = { cap };
     RET(gl_forward(e->fn, args, 1));
 }
@@ -470,6 +497,34 @@ static void gl_vertex_watch(CPU *c)
     if (e) gl_dispatch(c, e);
 }
 
+/* Compressed texture uploads, checked.
+ *
+ * A texture that fails to upload is not an error the game will see - it binds
+ * the name, samples it, and gets black. With every geometry stage cleared, a
+ * scene drawn entirely in black textures is exactly what a black frame looks
+ * like. */
+static void gl_compressed_tex(CPU *c)
+{
+    static GlEntry *e;
+    static int shown;
+    if (!e) { for (unsigned i = 0; i < GL_COUNT; i++)
+                  if (strcmp(g_gl[i].name, "glCompressedTexImage2DARB") == 0) e = &g_gl[i]; }
+    while (glGetError() != GL_NO_ERROR) { }          /* start clean */
+    if (e) gl_dispatch(c, e);
+    GLenum err = glGetError();
+    if (shown < 6 && getenv("LINDBERGH_FBSTATS")) {
+        shown++;
+        /* Is there anything IN the texture? A correct upload of an empty
+         * buffer samples black, and the call itself reports success. */
+        const unsigned char *d = (const unsigned char *)(uintptr_t)A32(7);
+        unsigned nz = 0, n = A32(6) < 4096 ? A32(6) : 4096;
+        if (d) for (unsigned i = 0; i < n; i++) if (d[i]) nz++;
+        fprintf(stderr, "[gl] compressedTex level %u fmt 0x%X %ux%u size %u -> 0x%X, "
+                        "%u/%u bytes non-zero\n",
+                A32(1), A32(2), A32(3), A32(4), A32(6), err, nz, n);
+    }
+}
+
 void hle_register_gl(void)
 {
     int n = 0;
@@ -478,6 +533,7 @@ void hle_register_gl(void)
     hle_bind("glProgramStringARB", gl_program_string);   /* watched, see above */
     hle_bind("glBindFramebufferEXT", gl_bind_framebuffer);
     hle_bind("glBegin", gl_begin_watch);
+    hle_bind("glCompressedTexImage2DARB", gl_compressed_tex);
     hle_bind("glVertex3f", gl_vertex_watch);
     hle_bind("glEnable", gl_enable_filter);
     hle_bind("glDisable", gl_disable_watch);

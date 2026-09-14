@@ -41,6 +41,8 @@
 #define TOK_WINDOW  0x58570001u      /* "XW" */
 #define TOK_COLORMAP 0x58430001u     /* "XC" */
 
+static unsigned long g_gl_thread;   /* where the context was made current */
+
 static struct {
     HWND   hwnd;
     HDC    hdc;
@@ -131,6 +133,8 @@ static int make_window(void)
  * XVisualInfo, as the guest's Xlib headers lay it out on i386. The game reads
  * `depth` and passes the rest straight back, so only the size and that one
  * field have to be right. */
+static unsigned long g_gl_thread;   /* where the context was made current */
+
 static struct {
     uint32_t visual;
     uint32_t visualid;
@@ -320,6 +324,9 @@ static void h_glXMakeCurrent(CPU *c)
     HGLRC rc = (HGLRC)(uintptr_t)A32(2);
     if (!rc) { wglMakeCurrent(NULL, NULL); RET(1); return; }
     if (!wglMakeCurrent(g_win.hdc, rc)) { RET(0); return; }
+    g_gl_thread = GetCurrentThreadId();
+    fprintf(stderr, "[glX] context made current on thread %lu\n",
+            (unsigned long)g_gl_thread);
 
     if (!g_win.gl) {
         g_win.gl = LoadLibraryA("opengl32.dll");
@@ -431,6 +438,33 @@ static void inspect_frame(void)
         glClear(GL_COLOR_BUFFER_BIT);
     }
 
+    /* And a second check, of the draw path rather than the clear path. A clear
+     * proves the context and the buffer; it does not prove that a primitive
+     * can reach them. This draws a quad in clip space with everything that
+     * could reject it turned off - if it does not appear, the pipeline is
+     * refusing geometry and the game's draws were never going to land. */
+    if (want_stats && g_frame == 4) {
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+        glDisable(GL_ALPHA_TEST);
+        glDisable(GL_TEXTURE_2D);
+        glDisable(0x8620);                  /* GL_VERTEX_PROGRAM_ARB */
+        glDisable(0x8804);                  /* GL_FRAGMENT_PROGRAM_ARB */
+        glColorMask(1, 1, 1, 1);
+        glColor4f(1.0f, 0.0f, 1.0f, 1.0f);
+        glBegin(GL_QUADS);
+            glVertex3f(-0.5f, -0.5f, 0.0f);
+            glVertex3f( 0.5f, -0.5f, 0.0f);
+            glVertex3f( 0.5f,  0.5f, 0.0f);
+            glVertex3f(-0.5f,  0.5f, 0.0f);
+        glEnd();
+        fprintf(stderr, "[fb] drew a test quad, gl error 0x%X\n", glGetError());
+    }
+
     glReadBuffer(GL_BACK);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, w, h, GL_BGR_EXT, GL_UNSIGNED_BYTE, buf);
@@ -453,6 +487,17 @@ static void inspect_frame(void)
 
 static void h_glXSwapBuffers(CPU *c)
 {
+    {   /* A WGL context belongs to one thread. If the engine draws on a
+         * different thread from the one it swaps on, every draw call runs
+         * against no current context, does nothing, and reports nothing. */
+        static int said;
+        unsigned long me = GetCurrentThreadId();
+        if (!said && me != g_gl_thread) {
+            said = 1;
+            fprintf(stderr, "[glX] WARNING: swapping on thread %lu, context is on %lu\n",
+                    me, g_gl_thread);
+        }
+    }
     inspect_frame();            /* before the swap: the back buffer is the frame */
 
     /* Who presents the frame? Working back from the swap names the loop that

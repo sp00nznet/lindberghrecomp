@@ -31,6 +31,7 @@
 #define MAX_SHADERS   512
 
 typedef struct {
+    char *path;         /* which file this came from, for diagnosis */
     char *body;         /* the .cg text, comments and whitespace stripped */
     char *defines;      /* the #define block the .asm_gl records, stripped */
     char *compiled;     /* the .asm_gl itself */
@@ -195,6 +196,7 @@ static void index_dir(const char *dir, int depth)
         char *src = read_all(full, &slen);
         char *cmp = read_all(asm_path, &clen);
         if (src && cmp && g_sh_n < MAX_SHADERS) {
+            g_sh[g_sh_n].path     = _strdup(full);
             g_sh[g_sh_n].body     = strip_code(own_code(src, slen), 0);
             g_sh[g_sh_n].defines  = asm_defines(cmp);
             g_sh[g_sh_n].compiled = cmp;
@@ -288,7 +290,11 @@ static void h_cgCreateProgram(CPU *c)
                 if (strcmp(g_sh[i].defines, want_defs) != 0) continue;
                 size_t wl = strlen(whole), bl = strlen(g_sh[i].body);
                 if (bl && bl <= wl && memcmp(whole + wl - bl, g_sh[i].body, bl) == 0) {
-                    hit = i; g_match_body++; break;      /* its own code, at the end */
+                    hit = i; g_match_body++;
+                    if (getenv("LINDBERGH_FBSTATS") && g_match_body <= 14)
+                        fprintf(stderr, "[cg] match %2d -> %s\n", g_match_body,
+                                g_sh[i].path ? g_sh[i].path : "?");
+                    break;      /* its own code, at the end */
                 }
             }
             /* A define set that matches exactly one shader needs no second
