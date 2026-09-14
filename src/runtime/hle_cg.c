@@ -31,9 +31,38 @@
 #define MAX_SHADERS   512
 
 typedef struct {
-    char  *source;      /* the .cg text */
-    char  *compiled;    /* the .asm_gl beside it */
+    char *body;         /* the .cg text, comments and whitespace stripped */
+    char *defines;      /* the #define block the .asm_gl records, stripped */
+    char *compiled;     /* the .asm_gl itself */
 } Shader;
+
+/* Strip comments and all whitespace. Two texts that differ only in formatting
+ * are the same shader, and the engine hands over a PREPROCESSED source - its
+ * includes already pasted in and its comments likely gone - so a byte compare
+ * against the file on disc never matches. Reducing both to bare code makes the
+ * file's own body findable inside the preprocessed whole. */
+static char *strip_code(const char *src, size_t len)
+{
+    char *out = (char *)malloc(len + 1);
+    if (!out) return NULL;
+    size_t o = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (src[i] == '/' && i + 1 < len && src[i + 1] == '/') {
+            while (i < len && src[i] != '\n') i++;
+            continue;
+        }
+        if (src[i] == '/' && i + 1 < len && src[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < len && !(src[i] == '*' && src[i + 1] == '/')) i++;
+            i++;
+            continue;
+        }
+        if ((unsigned char)src[i] <= ' ') continue;
+        out[o++] = src[i];
+    }
+    out[o] = 0;
+    return out;
+}
 
 static Shader g_sh[MAX_SHADERS];
 static int    g_sh_n;
@@ -59,6 +88,52 @@ static char *read_all(const char *path, size_t *len_out)
  * sits beside it. Depth-limited because the tree is shallow by construction
  * (shader/Cg/{vs,ps,inc}) and a runaway walk during startup is worse than a
  * missed shader. */
+/* cgc stamps its invocation into the output:
+ *
+ *   # command line args: -q -profile vp40 -entry main #define MODE_GL (1) ...
+ *
+ * Everything from the first #define on is the variant key - the same block the
+ * engine passes to cgCreateProgram as its args. Stripped of whitespace so the
+ * two spellings compare equal. */
+static char *asm_defines(const char *compiled)
+{
+    const char *line = strstr(compiled, "command line args:");
+    if (!line) return strip_code("", 0);
+    const char *hash = strstr(line, "#define");
+    if (!hash) return strip_code("", 0);
+
+    /* The block runs to the end of the comment run - every following line that
+     * still begins with a '#' or whitespace before one. */
+    const char *end = hash;
+    while (*end) {
+        const char *nl = strchr(end, '\n');
+        if (!nl) { end += strlen(end); break; }
+        const char *peek = nl + 1;
+        while (*peek == ' ' || *peek == '	') peek++;
+        if (*peek != '#') { end = nl; break; }
+        end = nl + 1;
+    }
+    return strip_code(hash, (size_t)(end - hash));
+}
+
+/* The arguments the engine passes, reduced the same way. */
+static char *args_defines(CPU *c, uint32_t argv)
+{
+    char buf[4096];
+    size_t n = 0;
+    for (int k = 0; k < 32 && argv; k++) {
+        uint32_t p = rd32(argv + 4u * (uint32_t)k);
+        if (!p) break;
+        const char *a = (const char *)(uintptr_t)p;
+        size_t l = strlen(a);
+        if (n + l >= sizeof buf) break;
+        memcpy(buf + n, a, l);
+        n += l;
+    }
+    buf[n] = 0;
+    return strip_code(buf, n);
+}
+
 static void index_dir(const char *dir, int depth)
 {
     if (depth > 4 || g_sh_n >= MAX_SHADERS) return;
@@ -90,12 +165,15 @@ static void index_dir(const char *dir, int depth)
         snprintf(asm_path, sizeof asm_path, "%.*s.asm_gl",
                  (int)(strlen(full) - 3), full);
 
-        char *src = read_all(full, NULL);
-        char *cmp = read_all(asm_path, NULL);
+        size_t slen = 0, clen = 0;
+        char *src = read_all(full, &slen);
+        char *cmp = read_all(asm_path, &clen);
         if (src && cmp && g_sh_n < MAX_SHADERS) {
-            g_sh[g_sh_n].source = src;
+            g_sh[g_sh_n].body     = strip_code(src, slen);
+            g_sh[g_sh_n].defines  = asm_defines(cmp);
             g_sh[g_sh_n].compiled = cmp;
             g_sh_n++;
+            free(src);                 /* only the stripped body is kept */
         } else {
             free(src);
             free(cmp);
@@ -124,19 +202,6 @@ static void index_shaders(void)
     fprintf(stderr, "[cg] indexed %d precompiled shaders\n", g_sh_n);
 }
 
-/* Ignore whitespace when matching. The game may hand over a source it has
- * reassembled - line endings changed, a trailing newline gained or lost - and
- * a byte-exact compare would miss a shader that is plainly the same one. */
-static int same_source(const char *a, const char *b)
-{
-    for (;;) {
-        while (*a && (unsigned char)*a <= ' ') a++;
-        while (*b && (unsigned char)*b <= ' ') b++;
-        if (!*a || !*b) return !*a && !*b;
-        if (*a != *b) return 0;
-        a++; b++;
-    }
-}
 #endif
 
 static void h_cgCreateContext(CPU *c)  { index_shaders(); RET(CG_TOKEN_CTX); }
@@ -160,8 +225,34 @@ static void h_cgCreateProgram(CPU *c)
     index_shaders();
     const char *src = ASTR(2);
     if (src) {
-        for (int i = 0; i < g_sh_n; i++)
-            if (same_source(src, g_sh[i].source)) { RET(i + 1); return; }
+        /* Two things identify a program: which shader it is, and which of its
+         * #define permutations was asked for. The source says the first - the
+         * file's own body survives preprocessing and can be found inside the
+         * pasted-together whole - and the args say the second. Either alone is
+         * ambiguous: many shaders share a define set, and one shader has many. */
+        char *want_defs = args_defines(c, A32(5));
+        char *whole = strip_code(src, strlen(src));
+        int hit = -1;
+        if (want_defs && whole) {
+            for (int i = 0; i < g_sh_n; i++) {
+                if (!g_sh[i].body || !g_sh[i].defines) continue;
+                if (strcmp(g_sh[i].defines, want_defs) != 0) continue;
+                if (g_sh[i].body[0] && strstr(whole, g_sh[i].body)) { hit = i; break; }
+            }
+            /* A define set that matches exactly one shader needs no second
+             * opinion - and preprocessing can rewrite a body past recognition. */
+            if (hit < 0) {
+                int only = -1, seen = 0;
+                for (int i = 0; i < g_sh_n; i++)
+                    if (g_sh[i].defines && strcmp(g_sh[i].defines, want_defs) == 0) {
+                        only = i; seen++;
+                    }
+                if (seen == 1) hit = only;
+            }
+        }
+        free(want_defs);
+        free(whole);
+        if (hit >= 0) { RET(hit + 1); return; }
     }
     fprintf(stderr, "[cg] no precompiled match for a %zu-byte shader source\n",
             src ? strlen(src) : 0);
