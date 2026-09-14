@@ -68,11 +68,86 @@ static int find_plt(uint32_t va, HleId *out)
     return 0;
 }
 
+/* Guest call depth, per thread.
+ *
+ * A guest call becomes a host call: dispatch() invokes a lifted C function
+ * which calls dispatch() again. So guest recursion costs host stack, and a
+ * runaway one exhausts it. That failure is worth catching deliberately,
+ * because Windows reports stack exhaustion inconsistently - sometimes
+ * STATUS_STACK_OVERFLOW, sometimes a cookie check that ends in __fastfail,
+ * which no handler can see. Counting is cheaper than diagnosing afterwards. */
+#ifdef _MSC_VER
+static __declspec(thread) unsigned g_depth;
+static __declspec(thread) unsigned g_depth_max;
+#else
+static __thread unsigned g_depth;
+static __thread unsigned g_depth_max;
+#endif
+
+#define DEPTH_LIMIT 20000
+
+unsigned guest_depth(void)     { return g_depth; }
+unsigned guest_depth_max(void) { return g_depth_max; }
+
+/* Did execution ever reach THIS function? Set LINDBERGH_WATCH to a comma-
+ * separated list of hex addresses and each one reports the first time it is
+ * dispatched. The question comes up constantly during bring-up - a branch went
+ * the wrong way and something that should have run did not - and it is not
+ * answerable from a backtrace, which only shows what DID run. */
+static void watch_check(uint32_t va)
+{
+    static uint32_t list[16];
+    static int n = -1;
+    static unsigned char hit[16];
+    if (n < 0) {
+        n = 0;
+        const char *v = getenv("LINDBERGH_WATCH");
+        while (v && *v && n < 16) {
+            list[n++] = (uint32_t)strtoul(v, (char **)&v, 16);
+            while (*v == ',' || *v == ' ') v++;
+        }
+    }
+    for (int i = 0; i < n; i++)
+        if (list[i] == va && !hit[i]) {
+            hit[i] = 1;
+            fprintf(stderr, "[watch] reached %#010x\n", va);
+            fflush(stderr);
+        }
+}
+
+static int gl_token_call_entry(CPU *c, uint32_t va)
+{
+    uint32_t saved = c->esp;
+    c->esp += 4;                       /* the return slot, as  would */
+    if (gl_token_call(c, va)) return 1;
+    c->esp = saved;
+    return 0;
+}
+
 void dispatch(CPU *c, uint32_t va)
 {
     guest_trace_dispatch(va);
+    watch_check(va);
+
+    if (++g_depth > g_depth_max) g_depth_max = g_depth;
+    if (g_depth > DEPTH_LIMIT) {
+        fprintf(stderr, "[dispatch] guest call depth %u at %#010x - runaway recursion\n",
+                g_depth, va);
+        guest_report_state("call depth limit");
+        exit(43);
+    }
+    /* A GL entry point handed out by glXGetProcAddressARB. Same stack shape as
+     * an indirect PLT hit: consume the return slot so the handler sees
+     * argument 0 at esp+0. */
+    if (gl_token_call_entry(c, va)) { g_depth--; return; }
+
+    /* A host body standing in for a guest function. Checked first, so it wins
+     * over the lifted version; the range test costs two compares. */
+    HleHandler ov = guest_find_override(va);
+    if (ov) { (void)pop32(c); ov(c); g_depth--; return; }
+
     void (*fn)(CPU *) = find(va);
-    if (fn) { fn(c); return; }
+    if (fn) { fn(c); g_depth--; return; }
 
     /* An import reached indirectly. The stack here is one slot off from a
      * `call <stub>` site: esp points at the return address with the arguments
@@ -84,6 +159,7 @@ void dispatch(CPU *c, uint32_t va)
     if (find_plt(va, &id)) {
         (void)pop32(c);
         hle_call(c, id);
+        g_depth--;
         return;
     }
 

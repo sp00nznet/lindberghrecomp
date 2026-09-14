@@ -41,9 +41,37 @@ void guest_set_current_cpu(CPU *c) { g_current = c; }
 static uint32_t g_trace[TRACE_N];
 static unsigned g_trace_i;
 
+/* Persist the ring to a file, because the failure being chased kills the
+ * process with __fastfail and no handler runs - so an in-memory ring is lost
+ * exactly when it is wanted. Written every RING_FLUSH dispatches, which costs
+ * one small write per few thousand calls and nothing at all unless
+ * LINDBERGH_TRACE_FILE names somewhere to put it. */
+#define RING_FLUSH 2048
+
+static FILE *g_ringf;
+static unsigned g_since_flush;
+
+static void ring_persist(void)
+{
+    if (!g_ringf) {
+        const char *path = getenv("LINDBERGH_TRACE_FILE");
+        if (!path || !*path) { g_since_flush = 0; return; }
+        g_ringf = fopen(path, "wb");
+        if (!g_ringf) return;
+    }
+    fseek(g_ringf, 0, SEEK_SET);
+    fwrite(&g_trace_i, 4, 1, g_ringf);
+    fwrite(g_trace, 4, TRACE_N, g_ringf);
+    fflush(g_ringf);
+}
+
 void guest_trace_dispatch(uint32_t va)
 {
     g_trace[g_trace_i++ & (TRACE_N - 1)] = va;
+    if (++g_since_flush >= RING_FLUSH) {
+        g_since_flush = 0;
+        ring_persist();
+    }
 }
 
 static const char *region(uint32_t va)
@@ -53,6 +81,55 @@ static const char *region(uint32_t va)
     if (!va)                                   return "NULL";
     if (va < 0x1000u)                          return "near NULL";
     return "";
+}
+
+/* Walk the guest's frame pointers.
+ *
+ * The dispatch ring says what ran; it does not say who called whom, and for a
+ * fault inside a leaf like _Rb_tree::find the caller is the entire question.
+ * Lifted code keeps real frames - every function opens with push ebp / mov
+ * ebp, esp - so the chain is the ordinary one: saved ebp at [ebp], return
+ * address at [ebp+4].
+ *
+ * Addresses only, deliberately. The names live in the guest ELF's symbol
+ * table, which this runtime has no reason to carry; tools/elf turns a column
+ * of addresses into names in one pass, and that keeps the fault path free of
+ * anything that could itself fail. */
+static int readable(uint32_t va)
+{
+#ifdef _WIN32
+    MEMORY_BASIC_INFORMATION mbi;
+    if (!VirtualQuery((LPCVOID)(uintptr_t)va, &mbi, sizeof mbi)) {
+        fprintf(stderr, "  (cannot query %#010x)\n", va);
+        return 0;
+    }
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
+        fprintf(stderr, "  (%#010x: state %#lx protect %#lx)\n",
+                va, (unsigned long)mbi.State, (unsigned long)mbi.Protect);
+        return 0;
+    }
+    return 1;
+#else
+    return va > 0x1000u;
+#endif
+}
+
+void guest_backtrace(CPU *c)
+{
+    if (!c) return;
+    fprintf(stderr, "guest backtrace (ebp chain):\n");
+
+    uint32_t ebp = c->ebp;
+    for (int depth = 0; depth < 32; depth++) {
+        if (!readable(ebp) || !readable(ebp + 4)) break;
+        uint32_t saved = rd32(ebp);
+        uint32_t ret   = rd32(ebp + 4);
+        if (!ret) break;
+        fprintf(stderr, "  %2d  %#010x\n", depth, ret);
+        if (saved <= ebp) break;          /* frames grow upward; anything else is junk */
+        ebp = saved;
+    }
+    fflush(stderr);
 }
 
 void guest_report_state(const char *why)
@@ -71,6 +148,7 @@ void guest_report_state(const char *why)
         fprintf(stderr, "(no CPU registered)\n");
     }
 
+    guest_backtrace(g_current);
     fprintf(stderr, "last %d dispatches, oldest first:\n", TRACE_N);
     unsigned n = g_trace_i < TRACE_N ? g_trace_i : TRACE_N;
     for (unsigned k = n; k > 0; k--) {
@@ -105,3 +183,21 @@ void guest_install_crash_handler(void)
 #else
 void guest_install_crash_handler(void) { }
 #endif
+
+/* An instruction the lifter could not translate, reached at run time.
+ *
+ * The lifter used to emit a bare abort() here, and that cost four wrong
+ * diagnoses: MSVC's abort() calls __fastfail(FAST_FAIL_FATAL_APP_EXIT), which
+ * raises 0xC0000409 - a status named STATUS_STACK_BUFFER_OVERRUN, past every
+ * exception handler, with no message. So an unimplemented instruction looked
+ * exactly like memory corruption, and the one thing it could not look like was
+ * itself.
+ *
+ * Saying what it was, where it was, and how the program got there costs four
+ * lines and removes the whole confusion. */
+void lindbergh_todo(uint32_t va, const char *text)
+{
+    fprintf(stderr, "\n[recomp] unimplemented instruction at %#010x: %s\n", va, text);
+    guest_report_state("unimplemented instruction");
+    exit(44);
+}

@@ -16,7 +16,16 @@
 
 /* Generated code calls abort() wherever an instruction did not lift, so the
  * declaration has to travel with the header the generated code includes. */
+#include <stdint.h>
 #include <stdlib.h>
+
+/* cpu.h defaults RECOMP_TODO to a bare abort(), and invites a consumer to
+ * define its own first. Take the invitation: an abort() here raises
+ * __fastfail past every handler with no message, so an unimplemented
+ * instruction is indistinguishable from memory corruption - which cost four
+ * wrong diagnoses before this existed. */
+void lindbergh_todo(uint32_t va, const char *text);
+#define RECOMP_TODO(va, text) lindbergh_todo((va), (text))
 
 #include "cpu.h"
 
@@ -85,6 +94,10 @@ int hle_bind(const char *name, HleHandler fn);
  * binds its own on top. */
 void hle_register_all(void);
 void hle_register_libc(void);
+void hle_register_libc2(void);
+void hle_register_cg(void);
+void hle_register_io(void);
+void hle_register_libc3(void);
 void hle_register_pthread(void);
 void hle_register_window(void);
 
@@ -127,6 +140,29 @@ void guest_install_crash_handler(void);
 void guest_set_current_cpu(CPU *c);
 void guest_report_state(const char *why);
 void guest_trace_dispatch(uint32_t va);
+void guest_backtrace(CPU *c);
+
+/* ---- guest function overrides ----
+ * Replace a lifted function with a host one, by symbol name. For library code
+ * that was statically linked into the game and so never passes through the
+ * PLT - libXxf86vm being the reason this exists. */
+uint32_t   guest_symbol(const char *name);
+int        guest_override(const char *name, HleHandler fn);
+HleHandler guest_find_override(uint32_t va);
+void       hle_register_vidmode(void);
+void       hle_register_gl(void);
+
+/* A callable address for a GL entry point the game asks for by name but does
+ * not import. gl_token_call routes one; dispatch() consults it. */
+uint32_t   gl_token_for(const char *name);
+int        gl_token_call(CPU *c, uint32_t va);
+int        gl_token_count(void);
+void       lindbergh_window_size(int *w, int *h);
+
+/* Emitted by the lifter wherever an instruction did not translate. Reports and
+ * exits - never returns, because the guest state after a skipped instruction
+ * is wrong in a way that shows up much later as something else. */
+
 
 #ifdef __cplusplus
 }

@@ -56,6 +56,15 @@ static int env_int(const char *name, int dflt)
     return (v && *v) ? atoi(v) : dflt;
 }
 
+/* The window's size, for anything that has to describe the display to the
+ * game rather than draw on it - hle_vidmode reports exactly this as the one
+ * available video mode. */
+void lindbergh_window_size(int *w, int *h)
+{
+    if (w) *w = g_win.w ? g_win.w : env_int("LINDBERGH_WIDTH", DEFAULT_W);
+    if (h) *h = g_win.h ? g_win.h : env_int("LINDBERGH_HEIGHT", DEFAULT_H);
+}
+
 static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
@@ -262,6 +271,15 @@ static uint32_t build_display(void)
 
 static void h_glXChooseVisual(CPU *c)
 {
+    if (A32(2)) {
+        fprintf(stderr, "[glX] chooseVisual attribs:");
+        for (int i = 0; i < 40; i++) {
+            uint32_t v = rd32(A32(2) + 4u * i);
+            if (v == 0) break;
+            fprintf(stderr, " %u", v);
+        }
+        fprintf(stderr, "\n"); fflush(stderr);
+    }
     /* The attribute list asks for double buffering, depth bits and so on. The
      * host pixel format is chosen to satisfy the usual set rather than parsed
      * from it: a 2006 game wants RGBA, double buffered, 24-bit depth and 8-bit
@@ -327,9 +345,14 @@ static void h_glXGetProcAddressARB(CPU *c)
      * has no token to give, and 0 is what GLX returns for an entry point the
      * driver does not have - which the game already knows how to handle. */
     const char *name = ASTR(0);
+
+    /* An imported name already has a routable token with a handler behind it,
+     * so prefer the stub. Everything else - and init_extensions asks for 547
+     * of them - gets a synthetic one that dispatch() forwards to the host
+     * driver. Returning 0 for those left the engine feature flags clear, and
+     * graphics init gave up right after its first glClear. */
     uint32_t va = hle_plt_address(name);
-    if (!va)
-        fprintf(stderr, "[glX] getProcAddress(%s) -> unavailable\n", name);
+    if (!va) va = gl_token_for(name);
     RET(va);
 }
 
@@ -492,6 +515,16 @@ static void h_x_success(CPU *c) { RET(0); }
 static void h_x_token(CPU *c)   { RET(TOK_WINDOW); }
 static void h_x_void(CPU *c)    { (void)c; }
 
+static void h_XMissingExtension(CPU *c)
+{
+    /* Xlib's "extension not present" path. Naming it says which one the game
+     * wanted, which is the difference between guessing at the graphics seam
+     * and knowing. */
+    fprintf(stderr, "[X] missing extension: %s\n", A32(1) ? ASTR(1) : "(null)");
+    fflush(stderr);
+    RET(0);
+}
+
 static void h_XDefineCursor(CPU *c)
 {
     /* The game hides the hardware cursor and draws its own crosshair. */
@@ -558,7 +591,7 @@ void hle_register_window(void)
     hle_bind("XAutoRepeatOn", h_x_success);
     hle_bind("XParseColor", h_x_success);
     hle_bind("XLookupString", h_x_success);
-    hle_bind("XMissingExtension", h_x_success);
+    hle_bind("XMissingExtension", h_XMissingExtension);
     hle_bind("XextAddDisplay", h_x_success);
     hle_bind("XextRemoveDisplay", h_x_success);
     hle_bind("XextFindDisplay", h_x_success);

@@ -44,6 +44,10 @@ function(lindbergh_runtime target generated_dir)
         "${LINDBERGH_RUNTIME_DIR}/hle_libc.c"
         "${LINDBERGH_RUNTIME_DIR}/hle_pthread.c"
         "${LINDBERGH_RUNTIME_DIR}/hle_window.c"
+        "${LINDBERGH_RUNTIME_DIR}/hle_vidmode.c"
+        "${LINDBERGH_RUNTIME_DIR}/hle_gl.c"
+        "${LINDBERGH_RUNTIME_DIR}/hle_cg.c"
+        "${LINDBERGH_RUNTIME_DIR}/overrides.c"
         "${LINDBERGH_RUNTIME_DIR}/dispatch.c"
         "${LINDBERGH_RUNTIME_DIR}/crash_report.c"
     )

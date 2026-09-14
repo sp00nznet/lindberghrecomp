@@ -38,8 +38,14 @@ int hle_bind(const char *name, HleHandler fn)
 void hle_register_all(void)
 {
     hle_register_libc();
+    hle_register_libc2();
+    hle_register_io();
+    hle_register_libc3();
     hle_register_pthread();
     hle_register_window();
+    hle_register_vidmode();
+    hle_register_gl();
+    hle_register_cg();
 }
 
 /* Survey mode. Aborting on the first unimplemented import is the right default

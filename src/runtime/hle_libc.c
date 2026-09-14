@@ -29,6 +29,9 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <direct.h>
+#include <io.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #else
 #include <unistd.h>
@@ -74,7 +77,20 @@ static void *gmalloc(size_t n, size_t align)
     size_t hdr = sizeof(AllocHdr);
 
     void *base = malloc(n + align + hdr);
-    if (!base) return NULL;
+    if (!base) {
+        /* The guest has no way to report this and will dereference the null it
+         * gets back, several frames later, as a fault with nothing to say what
+         * happened. Say it here instead. */
+        static size_t total;
+        fprintf(stderr, "[libc] out of memory: %zu bytes (align %zu), %zu MB handed out so far\n",
+                n, align, total >> 20);
+        fflush(stderr);
+        return NULL;
+    }
+    {
+        static size_t total_ok;
+        total_ok += n;
+    }
 
     uintptr_t raw = (uintptr_t)base + hdr;
     uintptr_t aligned = (raw + align - 1) & ~(uintptr_t)(align - 1);
@@ -212,8 +228,9 @@ static void h_index(CPU *c) { RET(strchr(ASTR(0), AI32(1))); }
  * stack by hand. That keeps the host's formatting for the fiddly parts - field
  * width, precision, %g - without ever needing a real va_list.
  */
-static int guest_format(char *out, size_t cap, const char *fmt, CPU *c, unsigned argi)
+static int guest_format(char *out, size_t cap, const char *fmt, uint32_t argbase)
 {
+    unsigned argi = 0;      /* index into the argument list at argbase */
     size_t n = 0;
     char spec[64];
 
@@ -259,7 +276,7 @@ static int guest_format(char *out, size_t cap, const char *fmt, CPU *c, unsigned
             char *st = strchr(spec, 42);
             if (!st) break;
             snprintf(fixed, sizeof fixed, "%.*s%d%s",
-                     (int)(st - spec), spec, (int)A32(argi++), st + 1);
+                     (int)(st - spec), spec, (int)rd32(argbase + 4u * argi++), st + 1);
             snprintf(spec, sizeof spec, "%s", fixed);
         }
 
@@ -267,20 +284,20 @@ static int guest_format(char *out, size_t cap, const char *fmt, CPU *c, unsigned
         switch (conv) {
         case 'd': case 'i': case 'u': case 'o': case 'x': case 'X': case 'c':
             if (longlong) {
-                unsigned long long v = (unsigned long long)A32(argi) |
-                                       ((unsigned long long)A32(argi + 1) << 32);
+                unsigned long long v = (unsigned long long)rd32(argbase + 4u * argi) |
+                                       ((unsigned long long)rd32(argbase + 4u * (argi + 1)) << 32);
                 argi += 2;
                 char *q = strchr(spec, 113);     /* glibc %q -> %l, MSVC knows %ll */
                 if (q) *q = 108;
                 snprintf(piece, sizeof piece, spec, v);
             } else {
-                snprintf(piece, sizeof piece, spec, (int)A32(argi++));
+                snprintf(piece, sizeof piece, spec, (int)rd32(argbase + 4u * argi++));
             }
             break;
         case 'f': case 'F': case 'e': case 'E': case 'g': case 'G': case 'a': case 'A': {
             /* A double is 8 bytes on the guest stack whether the call site
              * wrote a float or not - C promotes it in a variadic call. */
-            uint64_t bits = (uint64_t)A32(argi) | ((uint64_t)A32(argi + 1) << 32);
+            uint64_t bits = (uint64_t)rd32(argbase + 4u * argi) | ((uint64_t)rd32(argbase + 4u * (argi + 1)) << 32);
             double d;
             argi += 2;
             memcpy(&d, &bits, 8);
@@ -288,12 +305,12 @@ static int guest_format(char *out, size_t cap, const char *fmt, CPU *c, unsigned
             break;
         }
         case 's': {
-            const char *sv = (const char *)(uintptr_t)A32(argi++);
+            const char *sv = (const char *)(uintptr_t)rd32(argbase + 4u * argi++);
             snprintf(piece, sizeof piece, spec, sv ? sv : "(null)");
             break;
         }
         case 'p':
-            snprintf(piece, sizeof piece, "0x%08X", A32(argi++));
+            snprintf(piece, sizeof piece, "0x%08X", rd32(argbase + 4u * argi++));
             break;
         case 'n':
             argi++;                          /* refuse, but still eat the pointer */
@@ -319,19 +336,19 @@ static char g_fmtbuf[16384];
 
 static void h_printf(CPU *c)
 {
-    int n = guest_format(g_fmtbuf, sizeof g_fmtbuf, ASTR(0), c, 1);
+    int n = guest_format(g_fmtbuf, sizeof g_fmtbuf, ASTR(0), c->esp + 4u);
     fputs(g_fmtbuf, stdout);
     RET(n);
 }
 static void h_fprintf(CPU *c)
 {
-    int n = guest_format(g_fmtbuf, sizeof g_fmtbuf, ASTR(1), c, 2);
+    int n = guest_format(g_fmtbuf, sizeof g_fmtbuf, ASTR(1), c->esp + 8u);
     fputs(g_fmtbuf, (FILE *)APTR(0));
     RET(n);
 }
 static void h_sprintf(CPU *c)
 {
-    int n = guest_format(g_fmtbuf, sizeof g_fmtbuf, ASTR(1), c, 2);
+    int n = guest_format(g_fmtbuf, sizeof g_fmtbuf, ASTR(1), c->esp + 8u);
     /* guest_format reports the length the format WOULD have produced, which is
      * what sprintf returns - but only what fit is in the buffer, so copying n
      * bytes would read past it. */
@@ -342,7 +359,7 @@ static void h_sprintf(CPU *c)
 static void h_snprintf(CPU *c)
 {
     uint32_t cap = A32(1);
-    int n = guest_format(g_fmtbuf, sizeof g_fmtbuf, ASTR(2), c, 3);
+    int n = guest_format(g_fmtbuf, sizeof g_fmtbuf, ASTR(2), c->esp + 12u);
     if (cap) {
         size_t take = (size_t)n < cap - 1 ? (size_t)n : cap - 1;
         memcpy(ASTR(0), g_fmtbuf, take);
@@ -375,7 +392,14 @@ static void h_exit(CPU *c)
     fflush(stderr);
     exit(AI32(0));
 }
-static void h_getenv(CPU *c) { RET(getenv(ASTR(0))); }
+static void h_getenv(CPU *c)
+{
+    const char *k = ASTR(0);
+    const char *v = getenv(k);
+    fprintf(stderr, "[env] %s = %s\n", k, v ? v : "(unset)");
+    fflush(stderr);
+    RET(v);
+}
 static void h_getpid(CPU *c) { (void)c; RET(1); }
 static void h_rand  (CPU *c) { (void)c; RET(rand()); }
 
@@ -686,4 +710,307 @@ void hle_register_libc(void)
     hle_bind("__divdi3", h_divdi3);
     hle_bind("__udivdi3", h_udivdi3);
     hle_bind("__umoddi3", h_umoddi3);
+}
+
+/* ---- files, wide characters, and glibc's versioned internals ----
+ *
+ * The game reaches these once it starts loading data: stat to find files,
+ * strtol to parse its configuration, and the wide-character set because its
+ * text handling is locale-aware. */
+
+/* glibc never exported `stat` itself - the header turns it into __xstat with a
+ * struct-version argument, so that is what a binary imports. The struct is the
+ * kernel's stat64 layout, and the game reads st_mode and st_size from it. */
+#define GST_mode 16
+#define GST_size 44
+
+static void xstat_common(CPU *c, const char *path, uint32_t out)
+{
+    struct _stat64 st;
+    if (!path || _stat64(path, &st) != 0) { RET(-1); return; }
+    if (out) {
+        memset((void *)(uintptr_t)out, 0, 88);          /* sizeof(struct stat64) */
+        wr32(out + GST_mode, (uint32_t)st.st_mode);
+        wr32(out + GST_size, (uint32_t)st.st_size);
+    }
+    RET(0);
+}
+
+/* __xstat(version, path, buf) - the version is glibc's, and nothing here
+ * varies by it. */
+static void h_xstat(CPU *c)  { xstat_common(c, ASTR(1), A32(2)); }
+static void h_lxstat(CPU *c) { xstat_common(c, ASTR(1), A32(2)); }
+
+static void h_access(CPU *c) { RET(_access(ASTR(0), AI32(1))); }
+
+/* strtol and strtoul are exported under these names with a `group` argument
+ * that only affects locale-specific digit grouping, which no game uses. */
+static void h_strtol_internal(CPU *c)
+{
+    RET(strtol(ASTR(0), (char **)(uintptr_t)A32(1), AI32(2)));
+}
+static void h_strtoul_internal(CPU *c)
+{
+    RET(strtoul(ASTR(0), (char **)(uintptr_t)A32(1), AI32(2)));
+}
+static void h_strtod_internal(CPU *c)
+{
+    RETF(strtod(ASTR(0), (char **)(uintptr_t)A32(1)));
+}
+
+/* Wide characters. The game is in the C locale, where the conversions are the
+ * identity over ASCII and undefined above it - so these are as complete as
+ * they need to be. */
+static void h_wcslen(CPU *c)
+{
+    const uint32_t *w = (const uint32_t *)APTR(0);
+    size_t n = 0;
+    while (w && w[n]) n++;
+    RET(n);
+}
+static void h_btowc(CPU *c) { int ch = AI32(0); RET(ch < 0 || ch > 0x7F ? 0xFFFFFFFFu : (uint32_t)ch); }
+static void h_wctob(CPU *c) { uint32_t w = A32(0); RET(w > 0x7F ? 0xFFFFFFFFu : w); }
+
+/* wctype("alpha") and friends return an opaque handle that iswctype then
+ * interprets. The handle only has to be distinct and non-zero per class. */
+static void h_wctype(CPU *c)
+{
+    static const char *const classes[] = {
+        "alnum","alpha","blank","cntrl","digit","graph",
+        "lower","print","punct","space","upper","xdigit"
+    };
+    const char *want = ASTR(0);
+    for (unsigned i = 0; i < sizeof classes / sizeof classes[0]; i++)
+        if (strcmp(want, classes[i]) == 0) { RET(i + 1); return; }
+    RET(0);
+}
+
+static void h_iswctype(CPU *c)
+{
+    int ch = (int)A32(0);
+    unsigned cls = A32(1);
+    if (ch > 0x7F) { RET(0); return; }
+    switch (cls) {
+    case 1:  RET(isalnum(ch)); return;   case 2:  RET(isalpha(ch)); return;
+    case 3:  RET(ch == ' ' || ch == '\t'); return;
+    case 4:  RET(iscntrl(ch)); return;   case 5:  RET(isdigit(ch)); return;
+    case 6:  RET(isgraph(ch)); return;   case 7:  RET(islower(ch)); return;
+    case 8:  RET(isprint(ch)); return;   case 9:  RET(ispunct(ch)); return;
+    case 10: RET(isspace(ch)); return;   case 11: RET(isupper(ch)); return;
+    case 12: RET(isxdigit(ch)); return;
+    default: RET(0); return;
+    }
+}
+
+static void h_towlower(CPU *c) { uint32_t w = A32(0); RET(w <= 0x7F ? (uint32_t)tolower((int)w) : w); }
+static void h_towupper(CPU *c) { uint32_t w = A32(0); RET(w <= 0x7F ? (uint32_t)toupper((int)w) : w); }
+
+void hle_register_libc2(void)
+{
+    hle_bind("__xstat", h_xstat);
+    hle_bind("__lxstat", h_lxstat);
+    hle_bind("access", h_access);
+    hle_bind("__strtol_internal", h_strtol_internal);
+    hle_bind("__strtoul_internal", h_strtoul_internal);
+    hle_bind("__strtod_internal", h_strtod_internal);
+    hle_bind("wcslen", h_wcslen);
+    hle_bind("btowc", h_btowc);
+    hle_bind("wctob", h_wctob);
+    hle_bind("wctype", h_wctype);
+    hle_bind("iswctype", h_iswctype);
+    hle_bind("towlower", h_towlower);
+    hle_bind("towupper", h_towupper);
+}
+
+/* ---- descriptors and devices ----
+ *
+ * The game opens the JVS I/O board as a device and drives it with ioctl. There
+ * is no such device here, so open fails and the game is told so - which is the
+ * truth, and better than handing back a descriptor that answers nothing.
+ */
+/* The guest O_* constants are Linux's. Only the access mode and a few flags
+ * ever appear, and passing them through unchanged opens the wrong mode. */
+static int guest_open_flags(uint32_t f)
+{
+    int out = (int)(f & 3) | _O_BINARY;
+    if (f & 0x40)  out |= _O_CREAT;
+    if (f & 0x200) out |= _O_TRUNC;
+    if (f & 0x400) out |= _O_APPEND;
+    return out;
+}
+
+static void h_open(CPU *c)  { RET(_open(ASTR(0), guest_open_flags(A32(1)), 0666)); }
+static void h_close(CPU *c) { RET(_close(AI32(0))); }
+static void h_read(CPU *c)  { RET(_read(AI32(0), APTR(1), A32(2))); }
+static void h_write(CPU *c) { RET(_write(AI32(0), APTR(1), A32(2))); }
+static void h_lseek(CPU *c) { RET(_lseek(AI32(0), (long)AI32(1), AI32(2))); }
+static void h_ioctl(CPU *c) { RET(-1); }
+static void h_unlink(CPU *c) { RET(_unlink(ASTR(0))); }
+static void h_mkdir(CPU *c)  { RET(_mkdir(ASTR(0))); }
+
+/* iopl(3) asks the kernel for permission to execute IN and OUT directly.
+ * Granting it would be a lie with consequences: the game would then run port
+ * I/O instructions, which do not lift and cannot mean anything on a host that
+ * is not the cabinet. Refusing is both true and the answer that sends it down
+ * whatever path it has for not being on real hardware. */
+static void h_iopl(CPU *c) { RET(-1); }
+
+void hle_register_io(void)
+{
+    hle_bind("open", h_open);       hle_bind("close", h_close);
+    hle_bind("read", h_read);       hle_bind("write", h_write);
+    hle_bind("lseek", h_lseek);     hle_bind("ioctl", h_ioctl);
+    hle_bind("unlink", h_unlink);   hle_bind("mkdir", h_mkdir);
+    hle_bind("iopl", h_iopl);
+}
+
+/* ---- the v* formatters ----
+ *
+ * A va_list on i386 is nothing but a pointer into the caller's stack, so these
+ * are the same formatter with the argument base taken from the guest rather
+ * than computed from esp. That is the whole reason guest_format takes an
+ * address. */
+static void h_vsprintf(CPU *c)
+{
+    int n = guest_format(g_fmtbuf, sizeof g_fmtbuf, ASTR(1), A32(2));
+    size_t have = strlen(g_fmtbuf);
+    memcpy(ASTR(0), g_fmtbuf, have + 1);
+    RET(n);
+}
+static void h_vsnprintf(CPU *c)
+{
+    uint32_t cap = A32(1);
+    int n = guest_format(g_fmtbuf, sizeof g_fmtbuf, ASTR(2), A32(3));
+    if (cap) {
+        size_t have = strlen(g_fmtbuf);
+        size_t take = have < cap - 1 ? have : cap - 1;
+        memcpy(ASTR(0), g_fmtbuf, take);
+        ASTR(0)[take] = 0;
+    }
+    RET(n);
+}
+static void h_vfprintf(CPU *c)
+{
+    int n = guest_format(g_fmtbuf, sizeof g_fmtbuf, ASTR(1), A32(2));
+    fputs(g_fmtbuf, (FILE *)APTR(0));
+    RET(n);
+}
+
+/* ---- dynamic loading ----
+ *
+ * The game dlopens the Sega sound library and looks its entry points up by
+ * name. It also imports those same names through its PLT, so the lookup can be
+ * answered the same way glXGetProcAddressARB is: hand back the stub, which is
+ * already an address dispatch() routes to a handler. The handle itself only
+ * has to be non-null and recognisable. */
+#define DL_HANDLE 0x444C0001u
+
+static void h_dlopen(CPU *c)
+{
+    fprintf(stderr, "[dl] dlopen(%s)\n", A32(0) ? ASTR(0) : "(self)");
+    RET(DL_HANDLE);
+}
+static void h_dlsym(CPU *c)
+{
+    const char *name = ASTR(1);
+    uint32_t va = hle_plt_address(name);
+    if (!va) fprintf(stderr, "[dl] dlsym(%s) -> not imported by this binary\n", name);
+    RET(va);
+}
+static void h_dlclose(CPU *c) { RET(0); }
+static void h_dlerror(CPU *c) { (void)c; RET(0); }
+
+/* ---- time ----
+ *
+ * struct tm on i386 glibc: nine ints, then tm_gmtoff and tm_zone. The game
+ * reads the date fields to stamp its logs. */
+static int32_t g_tm[11];
+
+static void h_localtime(CPU *c)
+{
+    time_t t = (time_t)(A32(0) ? rd32(A32(0)) : 0);
+    struct tm lt;
+    if (localtime_s(&lt, &t) != 0) { RET(0); return; }
+    g_tm[0] = lt.tm_sec;   g_tm[1] = lt.tm_min;   g_tm[2] = lt.tm_hour;
+    g_tm[3] = lt.tm_mday;  g_tm[4] = lt.tm_mon;   g_tm[5] = lt.tm_year;
+    g_tm[6] = lt.tm_wday;  g_tm[7] = lt.tm_yday;  g_tm[8] = lt.tm_isdst;
+    g_tm[9] = 0; g_tm[10] = 0;
+    RET(g_tm);
+}
+
+static void h_fscanf(CPU *c);   /* defined below, bound here */
+
+void hle_register_libc3(void)
+{
+    hle_bind("vsprintf", h_vsprintf);
+    hle_bind("vsnprintf", h_vsnprintf);
+    hle_bind("vfprintf", h_vfprintf);
+    hle_bind("dlopen", h_dlopen);
+    hle_bind("dlsym", h_dlsym);
+    hle_bind("dlclose", h_dlclose);
+    hle_bind("dlerror", h_dlerror);
+    hle_bind("localtime", h_localtime);
+    hle_bind("fscanf", h_fscanf);
+}
+
+/* ---- scanf ----
+ *
+ * The same problem as printf and a worse failure mode. A guest va_list cannot
+ * be handed to the host, so the format is walked here and each directive given
+ * to the host's own scanner on its own, with the single guest pointer it
+ * fills. Literal and whitespace runs are passed through too, because they
+ * consume input the conversions rely on.
+ *
+ * Leaving this unbound is not a no-op: the game reads its configuration with
+ * `while (!feof(f)) fscanf(...)`, and a scanf that returns without consuming
+ * anything turns that into an infinite loop. It span a hundred thousand times
+ * a second and drew nothing.
+ */
+static int guest_scan(FILE *f, const char *fmt, CPU *c, uint32_t argbase)
+{
+    unsigned argi = 0;
+    int filled = 0;
+    char spec[64];
+
+    while (*fmt) {
+        if (*fmt != 37) {                      /* not '%': literal or space */
+            const char *start = fmt;
+            while (*fmt && *fmt != 37) fmt++;
+            size_t len = (size_t)(fmt - start);
+            if (len < sizeof spec - 1) {
+                memcpy(spec, start, len);
+                spec[len] = 0;
+                fscanf(f, spec);               /* consumes, assigns nothing */
+            }
+            continue;
+        }
+
+        const char *start = fmt++;
+        if (*fmt == 37) { fscanf(f, "%%"); fmt++; continue; }
+
+        int suppress = 0;
+        if (*fmt == 42) { suppress = 1; fmt++; }            /* %* */
+        while (isdigit((unsigned char)*fmt)) fmt++;         /* width */
+        while (*fmt && strchr("hlLqjzt", *fmt)) fmt++;      /* length */
+        char conv = *fmt ? *fmt++ : 0;
+        if (!conv) break;
+
+        size_t len = (size_t)(fmt - start);
+        if (len >= sizeof spec - 1) break;
+        memcpy(spec, start, len);
+        spec[len] = 0;
+
+        if (suppress) { fscanf(f, spec); continue; }
+
+        void *dst = (void *)(uintptr_t)rd32(argbase + 4u * argi++);
+        if (!dst) break;
+        if (fscanf(f, spec, dst) == 1) filled++;
+        else break;                            /* a failed conversion ends it */
+    }
+    return filled;
+}
+
+static void h_fscanf(CPU *c)
+{
+    RET(guest_scan((FILE *)APTR(0), ASTR(1), c, c->esp + 8u));
 }
