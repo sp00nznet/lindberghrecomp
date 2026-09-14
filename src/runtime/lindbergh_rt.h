@@ -150,6 +150,9 @@ uint32_t   guest_symbol(const char *name);
 int        guest_override(const char *name, HleHandler fn);
 HleHandler guest_find_override(uint32_t va);
 void       hle_register_vidmode(void);
+void       hle_register_matrix(void);
+void       hle_register_console(void);
+void       hle_register_sega(void);
 void       hle_register_gl(void);
 
 /* A callable address for a GL entry point the game asks for by name but does

@@ -131,6 +131,8 @@ static GlEntry g_gl[] = {
 };
 
 #define GL_COUNT (sizeof g_gl / sizeof g_gl[0])
+static unsigned g_gl_calls[GL_COUNT];
+static int g_in_begin, g_err_shown, g_err_watch;
 
 /* One handler for all of them. Which entry this is comes from the import id,
  * so the guest's own PLT tells us the name and the table tells us the shape. */
@@ -148,9 +150,38 @@ static void gl_dispatch(CPU *c, GlEntry *e)
             return;
         }
     }
+    g_gl_calls[e - g_gl]++;
     uint32_t args[9];
     for (int i = 0; i < e->slots; i++) args[i] = A32(i);
     RET(gl_forward(e->fn, args, e->slots));
+
+    /* Which call first goes wrong. glGetError inside a Begin/End block is
+     * itself an invalid operation, so the flag skips that window. */
+    if (g_err_watch) {
+        if (e->name[2] == 'B' && strcmp(e->name, "glBegin") == 0) g_in_begin = 1;
+        else if (e->name[2] == 'E' && strcmp(e->name, "glEnd") == 0) g_in_begin = 0;
+        if (!g_in_begin) {
+            GLenum err = glGetError();
+            if (err && g_err_shown < 24) {
+                g_err_shown++;
+                fprintf(stderr, "[err] 0x%X after %s(%u, %u, %u)\n",
+                        err, e->name, e->slots > 0 ? args[0] : 0,
+                        e->slots > 1 ? args[1] : 0, e->slots > 2 ? args[2] : 0);
+                fflush(stderr);
+            }
+        }
+    }
+}
+
+/* Which entry points the engine actually uses, and how often. Cheaper than
+ * guessing one function at a time: the profile names the draw path, the
+ * transform path and the state it sets, all in one run. */
+void gl_report_calls(void)
+{
+    for (unsigned i = 0; i < GL_COUNT; i++)
+        if (g_gl_calls[i])
+            fprintf(stderr, "[prof] %-34s %u\n", g_gl[i].name, g_gl_calls[i]);
+    fflush(stderr);
 }
 
 /* One small trampoline per entry. hle_call passes only the CPU, so there is
@@ -290,6 +321,55 @@ static void gl_program_string(CPU *c)
     if (!e) { for (unsigned i = 0; i < GL_COUNT; i++)
                   if (strcmp(g_gl[i].name, "glProgramStringARB") == 0) e = &g_gl[i]; }
     if (!e) { RET(0); return; }
+
+    {   /* LINDBERGH_DUMP_FP=<dir> writes every program the engine supplies, so
+         * the text the Cg seam actually produced can be read rather than
+         * assumed correct. */
+        const char *dir = getenv("LINDBERGH_DUMP_FP");
+        if (dir && *dir) {
+            /* Name each dump by the program object it was loaded into, so a
+             * program seen bound at draw time can actually be found again. */
+            GLint id = 0;
+            { typedef void (__stdcall *PFNGPA)(unsigned, unsigned, GLint *);
+              static PFNGPA getprog;
+              if (!getprog) getprog = (PFNGPA)wglGetProcAddress("glGetProgramivARB");
+              if (getprog) getprog(A32(0), 0x8677 /* PROGRAM_BINDING_ARB */, &id); }
+            char path[512];
+            snprintf(path, sizeof path, "%s/%s_%03d.txt", dir,
+                     A32(0) == 0x8804 ? "fp" : "vp", (int)id);
+            FILE *f = fopen(path, "wb");
+            if (f) { fwrite((const void *)(uintptr_t)A32(3), 1, A32(2), f); fclose(f); }
+        }
+    }
+
+    /* LINDBERGH_FP_SOLID=1 replaces every fragment program with one that
+     * writes solid green. Geometry that rasterises then shows up whatever the
+     * real shader would have computed; geometry that never reaches a pixel
+     * stays black. That separates "the scene is shaded black" from "the scene
+     * is not on screen" without guessing at either. */
+    {
+        static int solid = -1;
+        if (solid < 0) { const char *v = getenv("LINDBERGH_FP_SOLID");
+                         solid = (v && *v) ? atoi(v) : 0; }
+        if (solid && A32(0) == 0x8804 /* GL_FRAGMENT_PROGRAM_ARB */) {
+            /* =1 solid green: does the geometry rasterise at all.
+             * =2 straight texture fetch: is the material the shader samples
+             *    black, or is the arithmetic around it what zeroes the frame. */
+            static const char green[] =
+                "!!ARBfp1.0\nMOV result.color, {0.0, 1.0, 0.0, 1.0};\nEND\n";
+            static const char tex[] =
+                "!!ARBfp1.0\nTEMP t;\nTEX t, fragment.texcoord[0], texture[0], 2D;\n"
+                "MOV t.a, 1.0;\nMOV result.color, t;\nEND\n";
+            static const char uv[] =
+                "!!ARBfp1.0\nTEMP t;\nMOV t, fragment.texcoord[0];\nMOV t.a, 1.0;\n"
+                "MOV result.color, t;\nEND\n";
+            const char *src = solid >= 3 ? uv : solid == 2 ? tex : green;
+            uint32_t args[4] = { A32(0), A32(1), (uint32_t)strlen(src),
+                                 (uint32_t)(uintptr_t)src };
+            RET(gl_forward(e->fn, args, 4));
+            return;
+        }
+    }
     gl_dispatch(c, e);
 
     static int complained;
@@ -334,6 +414,193 @@ static int no_fbo(void)
         cached = (v && *v && *v != '0') ? 1 : 0;
     }
     return cached;
+}
+
+/* The only draw call this engine makes.
+ *
+ * It submits no immediate-mode geometry at all: every primitive arrives
+ * through glDrawRangeElements out of a vertex buffer object. Counting these
+ * against the bound render target answers, without any theory in between,
+ * whether the empty scene target ever had geometry aimed at it. */
+static unsigned g_dre[16];
+static unsigned g_dre_verts[16];
+
+static void gl_draw_range(CPU *c)
+{
+    static GlEntry *e;
+    static int shown;
+    if (!e) { for (unsigned i = 0; i < GL_COUNT; i++)
+                  if (strcmp(g_gl[i].name, "glDrawRangeElements") == 0) e = &g_gl[i]; }
+
+    unsigned slot = g_cur_fbo < 16 ? g_cur_fbo : 15;
+    g_dre[slot]++;
+    g_dre_verts[slot] += A32(3);
+
+    if (shown < 12 && getenv("LINDBERGH_FBSTATS")) {
+        GLint vbo = 0, ibo = 0, vp[4] = {0,0,0,0};
+        glGetIntegerv(0x8894 /* ARRAY_BUFFER_BINDING_ARB */, &vbo);
+        glGetIntegerv(0x8895 /* ELEMENT_ARRAY_BUFFER_BINDING_ARB */, &ibo);
+        glGetIntegerv(GL_VIEWPORT, vp);
+        shown++;
+        fprintf(stderr, "[dre] fbo %u mode 0x%X range %u..%u count %u type 0x%X "
+                        "idx 0x%X | vbo %d ibo %d vp %dx%d\n",
+                g_cur_fbo, A32(0), A32(1), A32(2), A32(3), A32(4), A32(5),
+                (int)vbo, (int)ibo, vp[2], vp[3]);
+    }
+    if (e) gl_dispatch(c, e);
+}
+
+void gl_report_draws(void)
+{
+    fprintf(stderr, "[dre] draws per target:\n");
+    for (unsigned i = 0; i < 16; i++)
+        if (g_dre[i])
+            fprintf(stderr, "[dre]   fbo %u: %u draws, %u vertices\n",
+                    i, g_dre[i], g_dre_verts[i]);
+    fflush(stderr);
+}
+
+/* Every draw of one chosen frame, with what the back buffer held after it.
+ *
+ * 16,612 primitives are submitted to the default framebuffer each frame and it
+ * stays black. Either none of them ever writes a pixel, or something clears
+ * after them. Reading the target after each glEnd says which, and names the
+ * exact draw where the picture appears or fails to. */
+extern unsigned g_frame;
+
+static void gl_end_watch(CPU *c)
+{
+    static GlEntry *e;
+    static unsigned trace_at = 0u - 1u;
+    static unsigned nth;
+    if (!e) { for (unsigned i = 0; i < GL_COUNT; i++)
+                  if (strcmp(g_gl[i].name, "glEnd") == 0) e = &g_gl[i]; }
+    if (trace_at == 0u - 1u) {
+        const char *v = getenv("LINDBERGH_TRACE_FRAME");
+        trace_at = (v && *v) ? (unsigned)atoi(v) : 0u - 2u;
+    }
+    if (e) gl_dispatch(c, e);
+    if (g_frame != trace_at) return;
+
+    nth++;
+    unsigned char px[32 * 32 * 3];
+    GLint vp[4] = {0,0,0,0}, sc[4] = {0,0,0,0}, prog = 0;
+    glGetIntegerv(GL_VIEWPORT, vp);
+    glGetIntegerv(GL_SCISSOR_BOX, sc);
+    /* GL_PROGRAM_BINDING_ARB is not a glGetIntegerv pname; it has to be asked
+     * of a specific program target, and only means anything when that target
+     * is enabled. Asking it the wrong way returns a flat 0 for every draw. */
+    GLint fprog = 0;
+    { typedef void (__stdcall *PFNGPA)(unsigned, unsigned, GLint *);
+      static PFNGPA getprog;
+      if (!getprog) getprog = (PFNGPA)wglGetProcAddress("glGetProgramivARB");
+      if (getprog) { getprog(0x8620, 0x8677, &prog); getprog(0x8804, 0x8677, &fprog); } }
+    glReadBuffer(g_cur_fbo ? 0x8CE0 : GL_BACK);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    memset(px, 0, sizeof px);
+    glReadPixels(vp[0] + vp[2] / 2 - 16, vp[1] + vp[3] / 2 - 16, 32, 32,
+                 GL_BGR_EXT, GL_UNSIGNED_BYTE, px);
+    unsigned lit = 0, peak = 0;
+    for (int i = 0; i < 32 * 32; i++) {
+        unsigned v = px[i*3] | px[i*3+1] | px[i*3+2];
+        if (v > 8) lit++;
+        if (v > peak) peak = v;
+    }
+    GLboolean cm[4] = {1,1,1,1};
+    glGetBooleanv(GL_COLOR_WRITEMASK, cm);
+
+    /* The vertex program multiplies the vertex colour by program.env[5] and
+     * the fragment program multiplies the texture by that result. The texture
+     * is known good and the geometry is known to rasterise, so these eight
+     * constants and the current colour are what is left to decide the pixel. */
+    if (nth <= 12) {
+        typedef void (__stdcall *PFNGEP)(unsigned, unsigned, float *);
+        static PFNGEP getenvp;
+        if (!getenvp) getenvp = (PFNGEP)
+            wglGetProcAddress("glGetProgramEnvParameterfvARB");
+        float cc[4] = {0,0,0,0};
+        glGetFloatv(GL_CURRENT_COLOR, cc);
+        char l[512]; int at = 0;
+        at += snprintf(l + at, sizeof l - at,
+                       "[env] draw %u colour %.2f %.2f %.2f %.2f | vp env",
+                       nth, cc[0], cc[1], cc[2], cc[3]);
+        for (unsigned i = 0; i < 8 && getenvp; i++) {
+            float v[4] = {0,0,0,0};
+            getenvp(0x8620, i, v);
+            at += snprintf(l + at, sizeof l - at, " [%u]%.3g,%.3g,%.3g,%.3g",
+                           i, v[0], v[1], v[2], v[3]);
+        }
+        fprintf(stderr, "%s\n", l);
+    }
+
+    /* What the shader is actually sampling. A fragment program forced to a
+     * plain texture fetch renders black, so either nothing is bound to the
+     * unit it reads or the texture itself is black. Naming the bound object
+     * per unit, and reading one back, tells those apart. */
+    if (nth <= 12) {
+        typedef void (__stdcall *PFNAT)(unsigned);
+        static PFNAT activetex;
+        if (!activetex) activetex = (PFNAT)wglGetProcAddress("glActiveTextureARB");
+        char line[512]; int at = 0;
+        at += snprintf(line + at, sizeof line - at, "[tex] draw %u units:", nth);
+        for (unsigned u = 0; u < 8 && activetex; u++) {
+            GLint bound = 0, tw = 0, th = 0;
+            activetex(0x84C0 + u);
+            glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
+            if (!bound) continue;
+            glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &tw);
+            glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &th);
+            unsigned pct = 0;
+            /* Read a small mip rather than the base level: a 2048x2048 atlas
+             * skipped for being too big reports 0% and reads exactly like a
+             * black texture, which is how this probe lied the first time. */
+            GLint lv = 0, lw = tw, lh = th;
+            while ((lw > 256 || lh > 256) && lv < 12) {
+                lv++;
+                glGetTexLevelParameteriv(GL_TEXTURE_2D, lv, GL_TEXTURE_WIDTH, &lw);
+                glGetTexLevelParameteriv(GL_TEXTURE_2D, lv, GL_TEXTURE_HEIGHT, &lh);
+                if (lw <= 0 || lh <= 0) { lw = tw; lh = th; lv = 0; break; }
+            }
+            if (lw > 0 && lh > 0 && (long)lw * lh <= 4096L * 4096L) {
+                unsigned char *tb = (unsigned char *)malloc((size_t)lw * lh * 3);
+                if (tb) {
+                    memset(tb, 0, (size_t)lw * lh * 3);
+                    glGetTexImage(GL_TEXTURE_2D, lv, GL_BGR_EXT, GL_UNSIGNED_BYTE, tb);
+                    size_t l = 0, n = (size_t)lw * lh;
+                    for (size_t i = 0; i < n; i++)
+                        if ((tb[i*3] | tb[i*3+1] | tb[i*3+2]) > 8) l++;
+                    pct = (unsigned)(100 * l / n);
+                    free(tb);
+                }
+            }
+            /* A texture whose min filter mipmaps but which has no mip chain is
+             * incomplete, and an incomplete texture samples as solid black with
+             * no error anywhere. That is indistinguishable from a black image
+             * unless the filter and the level count are read together. */
+            GLint minf = 0, maxlvl = 0, l1w = 0, ifmt = 0;
+            glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, &minf);
+            glGetTexParameteriv(GL_TEXTURE_2D, 0x813D /* TEXTURE_MAX_LEVEL */, &maxlvl);
+            glGetTexLevelParameteriv(GL_TEXTURE_2D, 1, GL_TEXTURE_WIDTH, &l1w);
+            glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, 0x1003 /* INTERNAL_FORMAT */, &ifmt);
+            at += snprintf(line + at, sizeof line - at,
+                           " u%u=#%d(%dx%d %u%% min0x%X maxlvl%d lvl1w%d fmt0x%X)",
+                           u, (int)bound, tw, th, pct,
+                           (unsigned)minf, (int)maxlvl, (int)l1w, (unsigned)ifmt);
+            if (at > 400) break;
+        }
+        activetex(0x84C0);
+        fprintf(stderr, "%s\n", line);
+    }
+    fprintf(stderr, "[draw] %4u fbo %u vp %d,%d %dx%d sc%s %d,%d %dx%d "
+                    "vp%d/fp%d prog %d/%d | centre %u%% peak %u "
+                    "| mask %d%d%d%d depth %d alpha %d blend %d\n",
+            nth, g_cur_fbo, vp[0], vp[1], vp[2], vp[3],
+            glIsEnabled(GL_SCISSOR_TEST) ? "ON" : "off", sc[0], sc[1], sc[2], sc[3],
+            glIsEnabled(0x8620), glIsEnabled(0x8804), (int)prog, (int)fprog,
+            100 * lit / (32 * 32), peak,
+            cm[0], cm[1], cm[2], cm[3],
+            glIsEnabled(GL_DEPTH_TEST), glIsEnabled(GL_ALPHA_TEST),
+            glIsEnabled(GL_BLEND));
 }
 
 static void gl_bind_framebuffer(CPU *c)
@@ -389,6 +656,35 @@ static void gl_begin_watch(CPU *c)
  * wrong, every vertex lands outside the clip volume and the screen stays black
  * while every draw call still runs - which is the shape of the problem. A
  * matrix of NaNs or of enormous numbers says so immediately. */
+/* The range form of the same upload. The engine sends its matrices through
+ * this, four rows at a time; env[0] arriving as zeros while env[1..3] hold
+ * sensible numbers is either a write that never happened or a source row that
+ * really is zero, and only the arguments say which. */
+static void gl_env_params_watch(CPU *c)
+{
+    static GlEntry *e;
+    static int shown;
+    if (!e) { for (unsigned i = 0; i < GL_COUNT; i++)
+                  if (strcmp(g_gl[i].name, "glProgramParameters4fvNV") == 0) e = &g_gl[i]; }
+    if (shown < 24 && getenv("LINDBERGH_PARAMS")) {
+        shown++;
+        const float *v = (const float *)(uintptr_t)A32(3);
+        unsigned n = A32(2) > 4 ? 4 : A32(2);
+        char l[256]; int at = 0;
+        at += snprintf(l + at, sizeof l - at, "[par] target 0x%X index %u count %u:",
+                       A32(0), A32(1), A32(2));
+        for (unsigned i = 0; i < n && v; i++)
+            at += snprintf(l + at, sizeof l - at, " (%.4g %.4g %.4g %.4g)",
+                           v[i*4], v[i*4+1], v[i*4+2], v[i*4+3]);
+        fprintf(stderr, "%s\n", l);
+        /* Which guest code produced this matrix. The upload is faithful, so
+         * the zero row was computed that way; the caller chain names the
+         * lifted function to look at. */
+        if (shown == 1) guest_backtrace(c);
+    }
+    if (e) gl_dispatch(c, e);
+}
+
 static void gl_env_param_watch(CPU *c)
 {
     static GlEntry *e;
@@ -584,11 +880,14 @@ static void gl_check_fbo(CPU *c)
 void hle_register_gl(void)
 {
     int n = 0;
+    { const char *e = getenv("LINDBERGH_GLERR"); g_err_watch = e && *e && *e != '0'; }
     for (unsigned i = 0; i < GL_COUNT; i++)
         n += hle_bind(g_gl[i].name, g_gl_handlers[i]);
     hle_bind("glProgramStringARB", gl_program_string);   /* watched, see above */
     hle_bind("glBindFramebufferEXT", gl_bind_framebuffer);
     hle_bind("glBegin", gl_begin_watch);
+    hle_bind("glEnd", gl_end_watch);
+    hle_bind("glDrawRangeElements", gl_draw_range);
     hle_bind("glCheckFramebufferStatusEXT", gl_check_fbo);
     hle_bind("glClear", gl_clear_watch);
     hle_bind("glCompressedTexImage2DARB", gl_compressed_tex);
@@ -596,6 +895,7 @@ void hle_register_gl(void)
     hle_bind("glEnable", gl_enable_filter);
     hle_bind("glDisable", gl_disable_watch);
     hle_bind("glProgramEnvParameter4fvARB", gl_env_param_watch);
+    hle_bind("glProgramParameters4fvNV", gl_env_params_watch);
     fprintf(stderr, "[gl] %d of %u entry points bound\n", n, (unsigned)GL_COUNT);
 }
 
@@ -657,7 +957,15 @@ uint32_t gl_token_for(const char *name)
             return GL_TOKEN_BASE + (uint32_t)i;   /* same name, same pointer */
 
     void *fn = gl_resolve(name);
-    if (!fn || g_tok_n >= GL_TOKEN_MAX) return 0;
+    /* A name the driver will not hand back returns NULL to the engine, which
+     * then quietly does without that entry point - no error, no crash, just a
+     * feature that never runs. Worth seeing rather than assuming. */
+    if (!fn || g_tok_n >= GL_TOKEN_MAX) {
+        fprintf(stderr, "[tok] %s -> NULL%s\n", name,
+                g_tok_n >= GL_TOKEN_MAX ? " (token table full)" : "");
+        fflush(stderr);
+        return 0;
+    }
 
     g_tok[g_tok_n].name = _strdup(name);
     g_tok[g_tok_n].fn   = fn;

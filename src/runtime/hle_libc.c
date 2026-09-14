@@ -839,7 +839,16 @@ static int guest_open_flags(uint32_t f)
     return out;
 }
 
-static void h_open(CPU *c)  { RET(_open(ASTR(0), guest_open_flags(A32(1)), 0666)); }
+static void h_open(CPU *c)
+{
+    int fd = _open(ASTR(0), guest_open_flags(A32(1)), 0666);
+    /* The cabinet's devices are the ones that matter here: a JVS I/O board
+     * hangs off a serial port, and a game that cannot open it stops at an
+     * error screen instead of running its attract mode. */
+    if (getenv("LINDBERGH_OPENS"))
+        fprintf(stderr, "[open] %s -> %d\n", ASTR(0), fd);
+    RET(fd);
+}
 static void h_close(CPU *c) { RET(_close(AI32(0))); }
 static void h_read(CPU *c)  { RET(_read(AI32(0), APTR(1), A32(2))); }
 static void h_write(CPU *c) { RET(_write(AI32(0), APTR(1), A32(2))); }
@@ -854,6 +863,34 @@ static void h_mkdir(CPU *c)  { RET(_mkdir(ASTR(0))); }
  * is not the cabinet. Refusing is both true and the answer that sends it down
  * whatever path it has for not being on real hardware. */
 static void h_iopl(CPU *c) { RET(-1); }
+
+/* The engine's own console.
+ *
+ * _sDebug::putConsole is where this game narrates what it is doing - which
+ * hardware it looked for, what answered, and why it gave up. On the cabinet
+ * it goes to a debug console that is not here, so every one of those messages
+ * has been thrown away. It is a printf, and a static one, so the format
+ * string is the first argument and the rest follow it on the stack.
+ *
+ * LINDBERGH_CONSOLE=1 turns it on. Reading what the game says beats guessing
+ * what it wants. */
+static void h_putConsole(CPU *c)
+{
+    static char buf[4096];
+    guest_format(buf, sizeof buf, ASTR(0), c->esp + 4u);
+    fputs("[game] ", stderr);
+    fputs(buf, stderr);
+    if (!*buf || buf[strlen(buf) - 1] != '\n') fputc('\n', stderr);
+    fflush(stderr);
+    RET(0);
+}
+
+void hle_register_console(void)
+{
+    if (!getenv("LINDBERGH_CONSOLE")) return;
+    if (guest_override("_ZN7_sDebug10putConsoleEPKcz", h_putConsole))
+        fprintf(stderr, "[console] engine console messages enabled\n");
+}
 
 void hle_register_io(void)
 {

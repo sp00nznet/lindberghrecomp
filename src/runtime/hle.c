@@ -44,6 +44,9 @@ void hle_register_all(void)
     hle_register_pthread();
     hle_register_window();
     hle_register_vidmode();
+    hle_register_matrix();
+    hle_register_console();
+    hle_register_sega();
     hle_register_gl();
     hle_register_cg();
 }

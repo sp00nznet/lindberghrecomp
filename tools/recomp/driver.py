@@ -156,11 +156,10 @@ def recompile(elf_path, outdir, addrs=None, bounds=None, split=400):
                 "   override needs: some of what a Lindbergh game calls its libraries\n"
                 "   for is statically linked INTO the binary (libXxf86vm is), so those\n"
                 "   entry points are lifted code rather than imports and cannot be\n"
-                "   reached through the PLT. C++ mangled names are left out - nothing\n"
-                "   overrides those, and they are most of the symbol table. */\n"
+                "   reached through the PLT. Mangled C++ names are here too: the engine\n"
+                "   computes its matrices in C++, and one such routine is worth replacing. */\n"
                 "#define GUEST_SYMBOLS(X) \\\n")
-        plain = sorted((n, a) for a, (sz, n) in funcs.items()
-                       if n and not n.startswith("_Z"))
+        plain = sorted((n, a) for a, (sz, n) in funcs.items() if n)
         f.write(" \\\n".join('    X("%s", 0x%08Xu)' % (n, a) for n, a in plain) + "\n")
     print("[*] %d functions in %d translation units, %d imports"
           % (len(done), len(chunks), len(set(plt.values()))), file=sys.stderr)

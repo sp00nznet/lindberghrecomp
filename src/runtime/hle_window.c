@@ -350,7 +350,7 @@ static void h_glXMakeCurrent(CPU *c)
  * BMP - the default framebuffer, exactly as presented, which is the honest
  * thing to put in a README.
  */
-static unsigned g_frame;
+unsigned g_frame;   /* hle_gl.c traces one chosen frame */
 
 static void write_bmp(const char *path, const unsigned char *bgr, int w, int h)
 {
@@ -395,6 +395,8 @@ static void glBindFramebufferEXT_probe(unsigned fb)
     if (fn) fn(0x8D40 /* GL_FRAMEBUFFER_EXT */, fb);
 }
 
+static unsigned g_fbo_scan_at = 300;
+
 static void inspect_frame(void)
 {
     const char *shot = getenv("LINDBERGH_SHOT");
@@ -404,12 +406,17 @@ static void inspect_frame(void)
         const char *n = getenv("LINDBERGH_SHOT_FRAME");
         shot_at = (n && *n) ? (unsigned)atoi(n) : 300;
     }
-    int want_stats = stats && *stats && *stats != '0' && g_frame < 8;
+    int on = stats && *stats && *stats != '0';
+    /* The first frames are still loading: the engine has not drawn a scene
+     * yet, so a black back buffer there proves nothing. Keep the verbose
+     * state dump for those, and keep sampling coverage forever after. */
+    int verbose = on && g_frame < 8;
+    int want_stats = on && (g_frame < 8 || g_frame % 30 == 0);
 
     /* Where is the frame actually going? A game that renders into a
      * framebuffer object and never brings it back leaves the default one
      * untouched - and the call counts look identical either way. */
-    if (want_stats) {
+    if (verbose) {
         GLint fbo = 0, dbuf = 0, vp[4] = {0,0,0,0};
         glGetIntegerv(0x8CA6 /* GL_FRAMEBUFFER_BINDING_EXT */, &fbo);
         glGetIntegerv(GL_DRAW_BUFFER, &dbuf);
@@ -494,50 +501,59 @@ static void inspect_frame(void)
     /* And what did the offscreen targets end up holding? The engine renders
      * the scene into these and composites at the end; if they have an image
      * and the back buffer does not, the composite is the only thing left. */
-    if (want_stats && g_frame == 6) {
+    { const char *fn = getenv("LINDBERGH_FBO_FRAME");
+      g_fbo_scan_at = (fn && *fn) ? (unsigned)atoi(fn) : 300u; }
+    if (on && g_frame == g_fbo_scan_at) {
+        /* Read each offscreen target whole, at its own size. The previous
+         * version of this probe read a fixed 64x64 corner, which says nothing
+         * about a 1360x768 attachment whose image is anywhere else. */
+        typedef void (__stdcall *PFNGAP)(unsigned, unsigned, unsigned, GLint *);
+        static PFNGAP getattach;
+        if (!getattach) getattach = (PFNGAP)
+            wglGetProcAddress("glGetFramebufferAttachmentParameterivEXT");
+
         for (int fb = 1; fb <= 8; fb++) {
+            GLint kind = 0, name = 0, aw = 0, ah = 0;
             glBindFramebufferEXT_probe(fb);
-            unsigned char *t = (unsigned char *)malloc(64 * 64 * 3);
+            if (getattach) {
+                getattach(0x8D40, 0x8CE0, 0x8CD0 /* OBJECT_TYPE */,  &kind);
+                getattach(0x8D40, 0x8CE0, 0x8CD1 /* OBJECT_NAME */,  &name);
+            }
+            if (kind == GL_TEXTURE) {
+                GLint prev = 0;
+                glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev);
+                glBindTexture(GL_TEXTURE_2D, (GLuint)name);
+                glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH,  &aw);
+                glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &ah);
+                glBindTexture(GL_TEXTURE_2D, (GLuint)prev);
+            }
+            if (aw <= 0 || ah <= 0) { aw = w; ah = h; }
+            if (aw > 2048) aw = 2048;
+            if (ah > 2048) ah = 2048;
+
+            unsigned char *t = (unsigned char *)malloc((size_t)aw * ah * 3);
             if (!t) break;
-            glReadBuffer(0x8CE0);                   /* COLOR_ATTACHMENT0_EXT */
+            glReadBuffer(0x8CE0);
             glPixelStorei(GL_PACK_ALIGNMENT, 1);
-            memset(t, 0, 64 * 64 * 3);
-            glReadPixels(0, 0, 64, 64, GL_BGR_EXT, GL_UNSIGNED_BYTE, t);
-            unsigned lit = 0, peak = 0;
-            for (int i = 0; i < 64 * 64; i++) {
+            memset(t, 0, (size_t)aw * ah * 3);
+            glReadPixels(0, 0, aw, ah, GL_BGR_EXT, GL_UNSIGNED_BYTE, t);
+            size_t lit = 0, n = (size_t)aw * ah;
+            unsigned peak = 0;
+            for (size_t i = 0; i < n; i++) {
                 unsigned v = t[i*3] | t[i*3+1] | t[i*3+2];
                 if (v > 8) lit++;
                 if (v > peak) peak = v;
             }
-            fprintf(stderr, "[fb]   FBO %d: %.0f%% lit, peak %u (err 0x%X)\n",
-                    fb, 100.0 * lit / (64.0 * 64.0), peak, glGetError());
-
-            /* Does a draw of our own land in this target? If it does, the
-             * framebuffer is fine and the engine's geometry is the problem; if
-             * it does not, rendering into these targets is broken for
-             * everyone and the engine never had a chance. */
-            if (fb == 1) {
-                glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE);
-                glDisable(GL_SCISSOR_TEST); glDisable(GL_BLEND);
-                glDisable(GL_TEXTURE_2D);
-                glDisable(0x8620); glDisable(0x8804);
-                glColorMask(1,1,1,1);
-                glColor4f(0.0f, 1.0f, 0.0f, 1.0f);
-                glBegin(GL_QUADS);
-                  glVertex3f(-0.9f,-0.9f,0.0f); glVertex3f(0.9f,-0.9f,0.0f);
-                  glVertex3f( 0.9f, 0.9f,0.0f); glVertex3f(-0.9f, 0.9f,0.0f);
-                glEnd();
-                memset(t, 0, 64 * 64 * 3);
-                glReadPixels(0, 0, 64, 64, GL_BGR_EXT, GL_UNSIGNED_BYTE, t);
-                unsigned l2 = 0;
-                for (int i = 0; i < 64 * 64; i++)
-                    if ((t[i*3] | t[i*3+1] | t[i*3+2]) > 8) l2++;
-                fprintf(stderr, "[fb]   our own quad into FBO 1: %.0f%% lit (err 0x%X)\n",
-                        100.0 * l2 / (64.0 * 64.0), glGetError());
-            }
+            fprintf(stderr, "[fb]   FBO %d: attach kind 0x%X name %d, %dx%d, "
+                            "%.1f%% lit, peak %u (err 0x%X)\n",
+                    fb, kind, name, aw, ah,
+                    100.0 * (double)lit / (double)n, peak, glGetError());
             free(t);
         }
         glBindFramebufferEXT_probe(0);
+        { extern void gl_report_draws(void); gl_report_draws(); }
+        { extern void gl_report_calls(void); gl_report_calls(); }
+        fflush(stderr);
     }
 
     if (shot && g_frame == shot_at) write_bmp(shot, buf, w, h);
