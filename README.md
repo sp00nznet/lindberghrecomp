@@ -17,9 +17,8 @@
 **[Join the sp00nznet recomp Discord](https://discord.gg/CRpzGWZFcu)** — the
 community hub for sp00nznet's recomp projects.
 
-**Current version: v0.3.0 (September 2026).** The pipeline runs end to end
-against a real Lindbergh title at **99.91% instruction coverage**. See
-[Status](#status) for the numbers.
+**Current version: v0.4.0 (September 2026).** The recompiled game boots and
+reaches `main()`. See [Status](#status) for what runs and what it asks for next.
 
 ---
 
@@ -93,18 +92,73 @@ The subclass is 30 lines. Everything else the lifter already did.
 
 ## Status
 
-**The whole pipeline has been run against a real game binary.** *Let's Go
-Jungle*'s `lgj_final` — 12.7 MB, `ET_EXEC`, `EM_386`, entry `0x08072d70` — goes
-in, and 1.7 million lines of C come out.
+**The recompiled game runs its entire C runtime and reaches `main()`.**
+`_start`, every C++ static constructor in the binary, then `main` — all of it
+executing lifted x86, on a guest process this runtime builds.
+
+```
+[crt] __libc_csu_init at 0x0859fff8
+[hle] glXGetProcAddressARB
+[crt] main at 0x08411ff0 (argc=1)
+...
+[hle] XOpenDisplay
+```
 
 | | |
 |---|---|
-| Disc carving | **Works.** Verified against *Let's Go Jungle*, *House of the Dead 4*, *Initial D 4*, *Virtua Tennis 3* — four dumps, both filesystems found in each, payload extracted byte-exact. |
-| ELF32 parsing | **Works.** 2 `PT_LOAD`s, **31,752** sized `STT_FUNC` symbols, **406** PLT imports, 13 `DT_NEEDED` libraries. |
-| Lifting | **Works.** All 31,752 functions lift in **28 seconds**, producing 1,702,616 lines of C. Not one function failed outright. |
-| Instruction coverage | **99.91%.** 1,558 of 1,702,616 emitted lines are `/* TODO */ abort()`, down from 160,820 before SSE landed upstream. |
-| Compiles | **Yes.** The 600 most SSE-dense functions — 85,402 SSE instructions — build to a clean object with MSVC, no warnings. |
-| Runtime | **Partial.** Image mapping, initial stack, startup syscalls, dispatch and the import boundary build and run 32-bit. The 406 imports have no bodies yet. |
+| Disc carving | **Works.** Verified on four dumps — both filesystems found in each, payload extracted byte-exact. |
+| ELF32 parsing | **Works.** 2 `PT_LOAD`s, **31,759** functions, **406** PLT imports, 13 `DT_NEEDED` libraries. |
+| Lifting | **Works.** All 31,759 functions, 28 s, 1,707,769 lines of C across 80 translation units. |
+| Instruction coverage | **99.94%** — 962 `/* TODO */ abort()` lines left. |
+| Compiles and links | **Yes.** A 25 MB native executable. |
+| Boots | **Yes.** CRT, constructors, `main`. |
+| Runs | Stops at `XOpenDisplay`, which is the right place — see below. |
+
+### What the game actually asks for
+
+Survey mode (`LINDBERGH_HLE_PERMISSIVE=1`) reports each unbound import once and
+carries on, so one run enumerates the startup path in order rather than costing
+one 80-TU rebuild per import:
+
+```
+glXGetProcAddressARB            <- the only import the constructors need
+pthread_mutex_lock / unlock
+getcwd, realpath                <- works out where it is installed
+pthread_mutexattr_*, pthread_mutex_init, pthread_cond_init
+pthread_attr_*, sched_get_priority_max / min
+pthread_create                  <- spawns a worker thread
+pthread_cond_wait               <- and waits on it
+XSetErrorHandler, XOpenDisplay  <- opens the display
+```
+
+That is a far smaller startup than 406 imports suggested, and it puts the next
+two jobs in order: **pthread** on Win32 threads, then the **window seam**.
+
+### The window seam
+
+`XOpenDisplay` is where this stops, and it is where it should. Reimplementing
+50 Xlib calls on Windows so they can hand a GLX context to WGL is absurd. The
+game opens a Display, creates a Window and makes a GL context — so the seam is
+cut there: a Win32 window with a WGL context behind an opaque `Display *` the
+game never looks inside. 68 X11 and GLX imports collapse to about a dozen
+shims.
+
+### What is still unlifted
+
+962 lines, and none of it is on the startup path:
+
+| | count |
+|---|---:|
+| MMX — `movq` `pmaddwd` `paddd` `paddsw` `pshufw` `psrad` | 537 |
+| packed SSE arithmetic — `shufps` `mulps` `addps` | 231 |
+| x87 cases the FPU path misses | 102 |
+| `out` / `in` — port I/O, which userspace has no business doing | 83 |
+| everything else | 9 |
+
+MMX is a second register file and a second job; packed SSE was left out
+deliberately rather than guessed at, because a plausible-looking wrong lane is
+worse than an honest `abort()`. Both belong upstream in
+[pcrecomp](https://github.com/sp00nznet/pcrecomp).
 
 ### The binary is not stripped
 
