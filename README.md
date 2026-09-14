@@ -108,11 +108,36 @@ board. The frame is `glReadPixels` on the back buffer before the swap.
 | Disc carving | **Works.** Four dumps, both filesystems found in each, payload byte-exact. |
 | ELF32 parsing | **Works.** 31,759 functions, 406 PLT imports, 13 `DT_NEEDED`. |
 | Lifting | **Works.** All 31,759 in 28 s, 1.7 M lines across 80 translation units. |
-| Instruction coverage | **99.96%** — 622 `RECOMP_TODO` lines, all MMX or port I/O, none on a path reached. |
+| Instruction coverage | **99.96%** on the game — 622 `RECOMP_TODO` lines, all MMX or port I/O, none on a path reached. **100%** on four unrelated binaries, see below. |
 | Runtime | Image mapping, kernel, threads, window, GL, Cg, SEGA base board, JVS, NVRAM. |
 | Boots and runs | **Yes** — CRT, constructors, `main`, 3 threads. |
 | Presents a picture | **Yes.** Attract mode at 1360×768. |
 | Input, sound | **No.** |
+
+### Tried on binaries it was not written for
+
+A toolkit that works on one executable has not been shown to work. The disc
+ships eight more 32-bit x86 ELFs beside the game — NVIDIA's Cg compiler, the
+Apache Xerces XML parser, libpng — built by different people, at different
+times, with different compilers. They lift too:
+
+| | functions | imports | instructions | unlifted |
+|---|---:|---:|---:|---:|
+| `libxerces-c.so` | 9,019 | 4,448 | 409,207 | 0 |
+| `libpng.so` | 339 | 234 | 28,374 | 0 |
+| `libCg.so` | 284 | 125 | 18,520 | 48 |
+| `libCgGL.so` | 79 | 202 | 4,145 | 0 |
+
+460,246 instructions, and the 48 are not instructions. They disassemble as
+`rcr dword ptr [edx], 0` — a rotate by zero, thirty-five times, at eight-byte
+spacing — which no compiler emits. The bytes are `1C C2 1A 00 08 C2 1A 00 F4
+C1 1A 00 …`: little-endian pointers descending by 0x14, a switch jump table
+inside a function body, and the other site sits directly after a `jmp eax`.
+Data read as code, in a region nothing can branch to.
+
+So the answer is 100% on all four, and `libCg.so` lifting cleanly matters on
+its own: compiling the game's shaders properly rather than matching them
+against the disc's precompiled output needs exactly that library.
 
 ### The black frame was one instruction
 
