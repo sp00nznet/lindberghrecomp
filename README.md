@@ -96,7 +96,12 @@ The subclass is 30 lines. Everything else the lifter already did.
 A Lindbergh game boots from its own ELF, answers the cabinet's base board, and
 renders its attract mode.
 
-![Let's Go Jungle attract mode](docs/attract.png)
+![Two giant spiders mid-leap on a jungle path, both players' rifles and
+crosshairs on screen, combo counters running](docs/attract.png)
+
+*Let's Go Jungle*, demo sequence. The attract loop runs end to end — warning
+card, logos, title, tutorial, a demo of the rail sequences, and the ranking
+board. The frame is `glReadPixels` on the back buffer before the swap.
 
 | | |
 |---|---|

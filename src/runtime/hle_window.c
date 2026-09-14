@@ -401,11 +401,20 @@ static void inspect_frame(void)
 {
     const char *shot = getenv("LINDBERGH_SHOT");
     const char *stats = getenv("LINDBERGH_FBSTATS");
-    unsigned shot_at = 0;
+    unsigned shot_at = 0, shot_every = 0;
     if (shot) {
         const char *n = getenv("LINDBERGH_SHOT_FRAME");
         shot_at = (n && *n) ? (unsigned)atoi(n) : 300;
+        /* LINDBERGH_SHOT_EVERY=N writes a series instead of a single frame,
+         * starting at SHOT_FRAME. One frame of an attract mode says very
+         * little about it - the demo loop moves through several scenes, and
+         * which one a fixed frame number lands on is luck. */
+        const char *e = getenv("LINDBERGH_SHOT_EVERY");
+        shot_every = (e && *e) ? (unsigned)atoi(e) : 0;
     }
+    int shot_now = shot && g_frame >= shot_at &&
+                   (shot_every ? ((g_frame - shot_at) % shot_every) == 0
+                               : g_frame == shot_at);
     int on = stats && *stats && *stats != '0';
     /* The first frames are still loading: the engine has not drawn a scene
      * yet, so a black back buffer there proves nothing. Keep the verbose
@@ -440,7 +449,7 @@ static void inspect_frame(void)
                 glIsEnabled(0x8620 /* GL_VERTEX_PROGRAM_ARB */),
                 glIsEnabled(0x8804 /* GL_FRAGMENT_PROGRAM_ARB */));
     }
-    if (!want_stats && !(shot && g_frame == shot_at)) return;
+    if (!want_stats && !shot_now) return;
 
     int w = g_win.w, h = g_win.h;
     unsigned char *buf = (unsigned char *)malloc((size_t)w * h * 3);
@@ -556,7 +565,15 @@ static void inspect_frame(void)
         fflush(stderr);
     }
 
-    if (shot && g_frame == shot_at) write_bmp(shot, buf, w, h);
+    if (shot_now) {
+        if (shot_every) {
+            char path[512];
+            snprintf(path, sizeof path, "%s_%06u.bmp", shot, g_frame);
+            write_bmp(path, buf, w, h);
+        } else {
+            write_bmp(shot, buf, w, h);
+        }
+    }
     free(buf);
 }
 
