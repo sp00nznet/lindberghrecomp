@@ -525,6 +525,62 @@ static void gl_compressed_tex(CPU *c)
     }
 }
 
+/* Every clear, with where it went and whether it took.
+ *
+ * The one contradiction left: the engine clears to white and the back buffer
+ * never shows white, while an identical clear issued from this runtime reads
+ * back perfectly. Reading one pixel straight after each clear says which of
+ * those two stories is true, per call, with no theory in between. */
+static void gl_clear_watch(CPU *c)
+{
+    static GlEntry *e;
+    static int shown;
+    if (!e) { for (unsigned i = 0; i < GL_COUNT; i++)
+                  if (strcmp(g_gl[i].name, "glClear") == 0) e = &g_gl[i]; }
+
+    int look = shown < 14 && getenv("LINDBERGH_FBSTATS") != NULL;
+    GLfloat cc[4] = {0,0,0,0};
+    GLint fbo = 0;
+    if (look) {
+        glGetFloatv(GL_COLOR_CLEAR_VALUE, cc);
+        glGetIntegerv(0x8CA6 /* FRAMEBUFFER_BINDING_EXT */, &fbo);
+    }
+
+    if (e) gl_dispatch(c, e);
+
+    if (look) {
+        shown++;
+        unsigned char px[3] = {0,0,0};
+        glReadBuffer(fbo ? 0x8CE0 /* GL_COLOR_ATTACHMENT0_EXT */ : GL_BACK);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(4, 4, 1, 1, GL_BGR_EXT, GL_UNSIGNED_BYTE, px);
+        fprintf(stderr, "[clr] mask 0x%X fbo %d colour %.2f %.2f %.2f -> pixel %u %u %u\n",
+                A32(0), (int)fbo, cc[0], cc[1], cc[2], px[2], px[1], px[0]);
+        fflush(stderr);
+    }
+}
+
+/* The framebuffer completeness check, and what it answered.
+ *
+ * An incomplete framebuffer swallows every draw into it without error. The
+ * engine asks; if the answer is anything but COMPLETE it has been told its
+ * render targets are unusable, and a scene rendered into them goes nowhere. */
+static void gl_check_fbo(CPU *c)
+{
+    static GlEntry *e;
+    static int shown;
+    if (!e) { for (unsigned i = 0; i < GL_COUNT; i++)
+                  if (strcmp(g_gl[i].name, "glCheckFramebufferStatusEXT") == 0) e = &g_gl[i]; }
+    if (e) gl_dispatch(c, e);
+    if (shown < 10 && getenv("LINDBERGH_FBSTATS")) {
+        shown++;
+        GLint fbo = 0;
+        glGetIntegerv(0x8CA6, &fbo);
+        fprintf(stderr, "[fbo] status of %d = 0x%X %s\n", (int)fbo, c->eax,
+                c->eax == 0x8CD5 ? "(COMPLETE)" : "(NOT COMPLETE)");
+    }
+}
+
 void hle_register_gl(void)
 {
     int n = 0;
@@ -533,6 +589,8 @@ void hle_register_gl(void)
     hle_bind("glProgramStringARB", gl_program_string);   /* watched, see above */
     hle_bind("glBindFramebufferEXT", gl_bind_framebuffer);
     hle_bind("glBegin", gl_begin_watch);
+    hle_bind("glCheckFramebufferStatusEXT", gl_check_fbo);
+    hle_bind("glClear", gl_clear_watch);
     hle_bind("glCompressedTexImage2DARB", gl_compressed_tex);
     hle_bind("glVertex3f", gl_vertex_watch);
     hle_bind("glEnable", gl_enable_filter);

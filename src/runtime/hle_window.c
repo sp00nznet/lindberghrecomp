@@ -385,6 +385,16 @@ static void write_bmp(const char *path, const unsigned char *bgr, int w, int h)
     fprintf(stderr, "[shot] wrote %s (%dx%d)\n", path, w, h);
 }
 
+/* Bind a framebuffer from runtime code, without going through the guest's
+ * import. Resolved once from the driver. */
+static void glBindFramebufferEXT_probe(unsigned fb)
+{
+    typedef void (__stdcall *PFN)(unsigned, unsigned);
+    static PFN fn;
+    if (!fn) fn = (PFN)wglGetProcAddress("glBindFramebufferEXT");
+    if (fn) fn(0x8D40 /* GL_FRAMEBUFFER_EXT */, fb);
+}
+
 static void inspect_frame(void)
 {
     const char *shot = getenv("LINDBERGH_SHOT");
@@ -481,6 +491,55 @@ static void inspect_frame(void)
                 g_frame, 100.0 * (double)lit / (double)n, peak);
         fflush(stderr);
     }
+    /* And what did the offscreen targets end up holding? The engine renders
+     * the scene into these and composites at the end; if they have an image
+     * and the back buffer does not, the composite is the only thing left. */
+    if (want_stats && g_frame == 6) {
+        for (int fb = 1; fb <= 8; fb++) {
+            glBindFramebufferEXT_probe(fb);
+            unsigned char *t = (unsigned char *)malloc(64 * 64 * 3);
+            if (!t) break;
+            glReadBuffer(0x8CE0);                   /* COLOR_ATTACHMENT0_EXT */
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            memset(t, 0, 64 * 64 * 3);
+            glReadPixels(0, 0, 64, 64, GL_BGR_EXT, GL_UNSIGNED_BYTE, t);
+            unsigned lit = 0, peak = 0;
+            for (int i = 0; i < 64 * 64; i++) {
+                unsigned v = t[i*3] | t[i*3+1] | t[i*3+2];
+                if (v > 8) lit++;
+                if (v > peak) peak = v;
+            }
+            fprintf(stderr, "[fb]   FBO %d: %.0f%% lit, peak %u (err 0x%X)\n",
+                    fb, 100.0 * lit / (64.0 * 64.0), peak, glGetError());
+
+            /* Does a draw of our own land in this target? If it does, the
+             * framebuffer is fine and the engine's geometry is the problem; if
+             * it does not, rendering into these targets is broken for
+             * everyone and the engine never had a chance. */
+            if (fb == 1) {
+                glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE);
+                glDisable(GL_SCISSOR_TEST); glDisable(GL_BLEND);
+                glDisable(GL_TEXTURE_2D);
+                glDisable(0x8620); glDisable(0x8804);
+                glColorMask(1,1,1,1);
+                glColor4f(0.0f, 1.0f, 0.0f, 1.0f);
+                glBegin(GL_QUADS);
+                  glVertex3f(-0.9f,-0.9f,0.0f); glVertex3f(0.9f,-0.9f,0.0f);
+                  glVertex3f( 0.9f, 0.9f,0.0f); glVertex3f(-0.9f, 0.9f,0.0f);
+                glEnd();
+                memset(t, 0, 64 * 64 * 3);
+                glReadPixels(0, 0, 64, 64, GL_BGR_EXT, GL_UNSIGNED_BYTE, t);
+                unsigned l2 = 0;
+                for (int i = 0; i < 64 * 64; i++)
+                    if ((t[i*3] | t[i*3+1] | t[i*3+2]) > 8) l2++;
+                fprintf(stderr, "[fb]   our own quad into FBO 1: %.0f%% lit (err 0x%X)\n",
+                        100.0 * l2 / (64.0 * 64.0), glGetError());
+            }
+            free(t);
+        }
+        glBindFramebufferEXT_probe(0);
+    }
+
     if (shot && g_frame == shot_at) write_bmp(shot, buf, w, h);
     free(buf);
 }
