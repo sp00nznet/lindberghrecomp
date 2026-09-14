@@ -130,6 +130,20 @@ class Elf32:
         A stripped game ELF has no .symtab and this comes back nearly empty.
         That is the expected case for some titles, and the driver then wants a
         funcs.txt from Ghidra or IDA instead."""
+        # A STT_FUNC symbol sitting inside the PLT is a stub, not a function.
+        # .dynsym records an imported symbol's PLT slot as its value in some
+        # link configurations, and the size it carries is meaningless - Virtua
+        # Tennis 3 declares memalign at 0x0804E258 with a size of 486, which
+        # spans thirty PLT entries. Lifting that produces a "function" whose
+        # body is `jmp [got]` stubs, and the first one jumps to the lazy-bind
+        # address its GOT slot still holds: PLT+6, the push-and-resolve half of
+        # the next stub, where no lifted function exists and nothing can.
+        plt_spans = [(sh.addr, sh.addr + sh.size) for sh in self.sections
+                     if sh.name in (".plt", ".plt.sec", ".plt.got", ".iplt") and sh.addr]
+
+        def in_plt(va):
+            return any(lo <= va < hi for lo, hi in plt_spans)
+
         syms = []
         for sh in self.sections:
             if sh.type not in (SHT_SYMTAB, SHT_DYNSYM) or not sh.entsize:
@@ -137,7 +151,7 @@ class Elf32:
             strtab = self.sections[sh.link].offset
             for off in range(sh.offset, sh.offset + sh.size, sh.entsize):
                 name_off, value, size, info = struct.unpack_from("<IIIB", self.data, off)
-                if (info & 0xF) != STT_FUNC or not value:
+                if (info & 0xF) != STT_FUNC or not value or in_plt(value):
                     continue
                 syms.append((value, size, self._cstr(strtab + name_off)))
 
