@@ -93,37 +93,84 @@ The subclass is 30 lines. Everything else the lifter already did.
 
 ## Status
 
-**Corrected.** A previous version of this file said a Lindbergh game rendered.
-It runs — fully, and at speed — but the frame it presents is black. That was
-claimed from GL call counts without reading a pixel, which is exactly the
-mistake the `LINDBERGH_FBSTATS` probe now exists to prevent.
+A Lindbergh game boots from its own ELF, answers the cabinet's base board, and
+renders its attract mode.
 
-*Let's Go Jungle* boots from its own ELF, opens a window, loads 189 shader
-programs onto the GPU and runs a sustained render loop at ~32 fps, submitting
-~300 vertices and ~190 shader constants per frame. Nothing reaches the screen.
+![Let's Go Jungle attract mode](docs/attract.png)
 
 | | |
 |---|---|
 | Disc carving | **Works.** Four dumps, both filesystems found in each, payload byte-exact. |
 | ELF32 parsing | **Works.** 31,759 functions, 406 PLT imports, 13 `DT_NEEDED`. |
 | Lifting | **Works.** All 31,759 in 28 s, 1.7 M lines across 80 translation units. |
-| Instruction coverage | **99.96%** — 622 `RECOMP_TODO` lines, none on any path reached. |
-| Runtime | Image mapping, kernel, threads, window, GL, Cg, guest-function overrides. |
-| Boots and runs | **Yes** — CRT, constructors, `main`, 3 threads, 1,939 frames in 60 s. |
-| Presents a picture | **No.** The composite to the default framebuffer never lands. |
+| Instruction coverage | **99.96%** — 622 `RECOMP_TODO` lines, all MMX or port I/O, none on a path reached. |
+| Runtime | Image mapping, kernel, threads, window, GL, Cg, SEGA base board, JVS, NVRAM. |
+| Boots and runs | **Yes** — CRT, constructors, `main`, 3 threads. |
+| Presents a picture | **Yes.** Attract mode at 1360×768. |
+| Input, sound | **No.** |
+
+### The black frame was one instruction
+
+Worth writing down, because nothing about it was visible from where it hurt.
+
+`fxch st(N)` swaps the top of the x87 stack with the N-th register down.
+Capstone reports it with **both** registers and the implicit `st(0)` first, so
+the meaningful operand is `ops[-1]` — and the lifter read `ops[0]`. Every
+`fxch` became a swap of `st(0)` with itself: valid C, no crash, no warning, and
+the stack left in precisely the order the original code used `fxch` to avoid.
+906 of them in one game binary.
+
+There is no wrong-looking value at the point of the bug. Three correct floats
+get stored into three wrong places, and the damage surfaces hundreds of frames
+later as a single zero in a projection matrix, which collapses an entire scene
+onto a one-pixel line. The fix and its test are
+[in pcrecomp](https://github.com/sp00nznet/pcrecomp); the test fails on the old
+code with the self-swap it emitted.
+
+The lesson that stuck is in the instruments below.
 
 ### Measuring the picture, not the calls
 
-`LINDBERGH_FBSTATS=1` reads the back buffer before each swap and reports how
-much of it is lit; `LINDBERGH_SHOT=<path>` writes one frame out as a BMP. The
-probe verifies itself — on one frame it paints a colour nothing else would
-produce and reads it straight back — so a black report means a black frame and
-not a broken instrument.
+A previous version of this file claimed a game rendered, on the strength of GL
+call counts, without reading a pixel. Five diagnoses of the resulting black
+frame were wrong before one was right. Every instrument here exists because a
+guess stood in for a measurement, and several were wrong before they were
+right — the first framebuffer probe read a fixed 64×64 corner of an 800×600
+target and called a healthy buffer empty. **Check the instrument against a
+known answer before believing it.**
 
-Ruled out by measurement: shader rejection (189 load, none rejected), Cg
-mis-matching (all sampled programs matched on body *and* defines), colour mask,
-depth function, alpha test, blend, scissor, and framebuffer objects
-(`LINDBERGH_NO_FBO=1` changes nothing).
+| Variable | Question it answers |
+|---|---|
+| `LINDBERGH_FBSTATS=1` | how much of the frame is lit, and what each offscreen target holds at its own size |
+| `LINDBERGH_TRACE_FRAME=N` | every draw of one frame — bound programs, viewport, scissor, bound textures with their filter state, and the target after each |
+| `LINDBERGH_FP_SOLID=1\|2\|3` | replace every fragment program with flat green, a raw texture fetch, or the texture coordinates: does it rasterise, is the texture black, are the coordinates zero |
+| `LINDBERGH_DUMP_FP=dir` | the shader text the Cg seam actually supplied, named by program object |
+| `LINDBERGH_GLERR=1` | which entry point first raises a GL error |
+| `LINDBERGH_CONSOLE=1` | the game's own debug console — what hardware it looked for and why it gave up |
+| `LINDBERGH_SHOT=path` | one frame as a BMP |
+
+The most useful of those is the last-but-one. A Lindbergh game narrates its own
+startup through `_sDebug::putConsole`, which goes to a console the cabinet has
+and a desktop does not. Binding it turns the whole base-board problem from
+guesswork into reading.
+
+### The cabinet, not just the CPU
+
+A Lindbergh game reaches its hardware through SEGA's `amLib`, statically linked
+into the binary — so there is no import to bind, and the runtime replaces the
+lifted functions by symbol name instead. Without it a game stops on **Error 11
+— JVS I/O board is not connected to main board** before drawing anything.
+
+`hle_sega.c` answers three things, each at the lowest seam that works:
+
+* **The base board** — `amLibInit`, `amJvsInit`, `amDongleInit`, `amDongleUpdate` and their predicates. `amJvsCheckInit` is a predicate, not a status code; answering it with the library's success value of 0 becomes "−5 JVS node(s) found".
+* **A JVS I/O board**, at `amJvsSendRequest` / `amJvsRecvAcknowledge` only. The frames are real JVS, so all sixty of a game's own packet builders and parsers run unmodified above two replaced functions. It reports identity, revisions, and a feature list; nothing is pressed or aimed.
+* **The battery-backed store**, at the four wrapper functions under the record layer. Record layout, duplicate copies and CRCs are the game's own code and work untouched. Read takes the offset first and the buffer second; write takes them the other way round — which is not guessable, and the log says so.
+
+What is assumed rather than emulated: the backup records are blank and a game
+cannot initialise them without the EEPROM's I2C bus. A real cabinet ships that
+store written, so the runtime makes the same statement, suppresses the one
+error code it raises, and announces that it has.
 
 ### The binary is not stripped
 
