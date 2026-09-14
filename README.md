@@ -17,8 +17,8 @@
 **[Join the sp00nznet recomp Discord](https://discord.gg/CRpzGWZFcu)** — the
 community hub for sp00nznet's recomp projects.
 
-**Current version: v0.5.0 (September 2026).** A Lindbergh game runs and
-draws - *Let's Go Jungle* renders its attract mode at ~32 fps. See
+**Current version: v0.5.1 (September 2026).** A Lindbergh game boots and
+runs a full render loop; the frame it presents is still black. See
 [Status](#status).
 
 ---
@@ -93,29 +93,14 @@ The subclass is 30 lines. Everything else the lifter already did.
 
 ## Status
 
-**A Lindbergh game runs and draws.** *Let's Go Jungle* boots from its own ELF,
-opens a window, and renders its attract mode at roughly 32 frames per second on
-the host GPU — as recompiled C, with no emulator and no interpreter.
+**Corrected.** A previous version of this file said a Lindbergh game rendered.
+It runs — fully, and at speed — but the frame it presents is black. That was
+claimed from GL call counts without reading a pixel, which is exactly the
+mistake the `LINDBERGH_FBSTATS` probe now exists to prevent.
 
-```
-[gl] 96 of 96 entry points bound
-[crt] main at 0x08411ff0 (argc=1)
-[pthread] created thread at 0x084f9d82, 1024 KB stack   ×3
-[window] 1360x768
-[glX] context created (pixel format 11)
-[glX] current: NVIDIA GeForce RTX 5070/PCIe/SSE2 / 4.6.0 NVIDIA 595.97
-[cg] indexed 197 precompiled shaders
-```
-
-Measured over 60 seconds of attract mode:
-
-| | per run | per frame |
-|---|---:|---:|
-| `glXSwapBuffers` | 1,939 | — |
-| `glClear` | 21,320 | ~11 |
-| `glBegin` | 104,319 | ~54 |
-| `glBindTexture` | 106,550 | ~55 |
-| `glProgramStringARB` | 189 | — |
+*Let's Go Jungle* boots from its own ELF, opens a window, loads 189 shader
+programs onto the GPU and runs a sustained render loop at ~32 fps, submitting
+~300 vertices and ~190 shader constants per frame. Nothing reaches the screen.
 
 | | |
 |---|---|
@@ -124,13 +109,21 @@ Measured over 60 seconds of attract mode:
 | Lifting | **Works.** All 31,759 in 28 s, 1.7 M lines across 80 translation units. |
 | Instruction coverage | **99.96%** — 622 `RECOMP_TODO` lines, none on any path reached. |
 | Runtime | Image mapping, kernel, threads, window, GL, Cg, guest-function overrides. |
-| Renders | **Yes.** |
+| Boots and runs | **Yes** — CRT, constructors, `main`, 3 threads, 1,939 frames in 60 s. |
+| Presents a picture | **No.** The composite to the default framebuffer never lands. |
 
-### What is still unlifted
+### Measuring the picture, not the calls
 
-622 lines, none of them reached: MMX (`movq`, `pmaddwd`, `paddd`, `pshufw`),
-`out`/`in` port I/O that userspace has no business doing, and packed BCD. MMX
-is a second register file and a second job.
+`LINDBERGH_FBSTATS=1` reads the back buffer before each swap and reports how
+much of it is lit; `LINDBERGH_SHOT=<path>` writes one frame out as a BMP. The
+probe verifies itself — on one frame it paints a colour nothing else would
+produce and reads it straight back — so a black report means a black frame and
+not a broken instrument.
+
+Ruled out by measurement: shader rejection (189 load, none rejected), Cg
+mis-matching (all sampled programs matched on body *and* defines), colour mask,
+depth function, alpha test, blend, scissor, and framebuffer objects
+(`LINDBERGH_NO_FBO=1` changes nothing).
 
 ### The binary is not stripped
 

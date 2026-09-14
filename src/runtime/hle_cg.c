@@ -67,6 +67,8 @@ static char *strip_code(const char *src, size_t len)
 static Shader g_sh[MAX_SHADERS];
 static int    g_sh_n;
 static int    g_indexed;
+static int    g_match_body;      /* matched on shader body AND defines */
+static int    g_match_defines;   /* matched on a defines set unique to one shader */
 
 static char *read_all(const char *path, size_t *len_out)
 {
@@ -206,7 +208,12 @@ static void index_shaders(void)
 
 static void h_cgCreateContext(CPU *c)  { index_shaders(); RET(CG_TOKEN_CTX); }
 static void h_cgIsContext(CPU *c)      { RET(A32(0) == CG_TOKEN_CTX); }
-static void h_cgDestroyContext(CPU *c) { (void)c; }
+static void h_cgDestroyContext(CPU *c)
+{
+    (void)c;
+    fprintf(stderr, "[cg] matches: %d by body+defines, %d by defines alone\n",
+            g_match_body, g_match_defines);
+}
 static void h_cgSetErrorCallback(CPU *c) { (void)c; }
 static void h_cgGetError(CPU *c)       { (void)c; RET(0); }           /* CG_NO_ERROR */
 static void h_cgGetErrorString(CPU *c) { RET(""); }
@@ -237,7 +244,7 @@ static void h_cgCreateProgram(CPU *c)
             for (int i = 0; i < g_sh_n; i++) {
                 if (!g_sh[i].body || !g_sh[i].defines) continue;
                 if (strcmp(g_sh[i].defines, want_defs) != 0) continue;
-                if (g_sh[i].body[0] && strstr(whole, g_sh[i].body)) { hit = i; break; }
+                if (g_sh[i].body[0] && strstr(whole, g_sh[i].body)) { hit = i; g_match_body++; break; }
             }
             /* A define set that matches exactly one shader needs no second
              * opinion - and preprocessing can rewrite a body past recognition. */
@@ -247,12 +254,20 @@ static void h_cgCreateProgram(CPU *c)
                     if (g_sh[i].defines && strcmp(g_sh[i].defines, want_defs) == 0) {
                         only = i; seen++;
                     }
-                if (seen == 1) hit = only;
+                if (seen == 1) { hit = only; g_match_defines++; }
             }
         }
         free(want_defs);
         free(whole);
-        if (hit >= 0) { RET(hit + 1); return; }
+        if (hit >= 0) {
+            static int reported;
+            if (!reported && (g_match_body + g_match_defines) == 50) {
+                reported = 1;
+                fprintf(stderr, "[cg] first 50 matches: %d by body+defines, %d by defines alone\n",
+                        g_match_body, g_match_defines);
+            }
+            RET(hit + 1); return;
+        }
     }
     fprintf(stderr, "[cg] no precompiled match for a %zu-byte shader source\n",
             src ? strlen(src) : 0);

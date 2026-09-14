@@ -275,11 +275,80 @@ static HleHandler g_gl_handlers[] = {
     gl_t90, gl_t91, gl_t92, gl_t93, gl_t94, gl_t95,
 };
 
+/* glProgramStringARB, watched.
+ *
+ * An ARB program that the driver rejects leaves the program object unusable,
+ * and every draw afterwards fails with GL_INVALID_OPERATION - which is exactly
+ * what a black window with a busy render loop looks like. The driver will say
+ * where and why if asked, so ask. */
+#define GL_PROGRAM_ERROR_POSITION_ARB 0x864B
+#define GL_PROGRAM_ERROR_STRING_ARB   0x8874
+
+static void gl_program_string(CPU *c)
+{
+    static GlEntry *e;
+    if (!e) { for (unsigned i = 0; i < GL_COUNT; i++)
+                  if (strcmp(g_gl[i].name, "glProgramStringARB") == 0) e = &g_gl[i]; }
+    if (!e) { RET(0); return; }
+    gl_dispatch(c, e);
+
+    static int complained;
+    GLint pos = -1;
+    glGetIntegerv(GL_PROGRAM_ERROR_POSITION_ARB, &pos);
+    if (pos >= 0 && complained < 5) {
+        complained++;
+        const char *why = (const char *)glGetString(GL_PROGRAM_ERROR_STRING_ARB);
+        const char *src = (const char *)(uintptr_t)A32(3);
+        fprintf(stderr, "[gl] program rejected at byte %d: %s\n", (int)pos,
+                why ? why : "(no message)");
+        if (src) {
+            int from = pos > 40 ? pos - 40 : 0;
+            fprintf(stderr, "[gl]   near: %.80s\n", src + from);
+        }
+        fflush(stderr);
+    }
+}
+
+
+/* Render-to-texture, optionally refused.
+ *
+ * The engine draws its frame into framebuffer objects and composites at the
+ * end. If that composite never reaches the default framebuffer the window
+ * stays black while every draw call still happens - which is exactly what a
+ * call count cannot distinguish from working.
+ *
+ * LINDBERGH_NO_FBO=1 makes every bind select the default framebuffer, so the
+ * drawing lands on the screen directly. A diagnostic, not a fix: passes that
+ * expected to read back what they rendered will read the screen instead. */
+static int no_fbo(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *v = getenv("LINDBERGH_NO_FBO");
+        cached = (v && *v && *v != '0') ? 1 : 0;
+    }
+    return cached;
+}
+
+static void gl_bind_framebuffer(CPU *c)
+{
+    static GlEntry *e;
+    if (!e) { for (unsigned i = 0; i < GL_COUNT; i++)
+                  if (strcmp(g_gl[i].name, "glBindFramebufferEXT") == 0) e = &g_gl[i]; }
+    if (e && !e->fn) e->fn = gl_resolve(e->name);
+    if (!e || !e->fn) { RET(0); return; }
+
+    uint32_t args[2] = { A32(0), no_fbo() ? 0u : A32(1) };
+    RET(gl_forward(e->fn, args, 2));
+}
+
 void hle_register_gl(void)
 {
     int n = 0;
     for (unsigned i = 0; i < GL_COUNT; i++)
         n += hle_bind(g_gl[i].name, g_gl_handlers[i]);
+    hle_bind("glProgramStringARB", gl_program_string);   /* watched, see above */
+    hle_bind("glBindFramebufferEXT", gl_bind_framebuffer);
     fprintf(stderr, "[gl] %d of %u entry points bound\n", n, (unsigned)GL_COUNT);
 }
 

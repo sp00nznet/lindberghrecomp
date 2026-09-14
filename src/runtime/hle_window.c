@@ -331,8 +331,130 @@ static void h_glXMakeCurrent(CPU *c)
     RET(1);
 }
 
+/* ---- what is actually on the screen ----
+ *
+ * The call counts can look like rendering while the window stays black: a game
+ * that draws into a framebuffer object and never blits it back produces just
+ * as many glBegin and glBindTexture calls as one that draws to the screen.
+ * So read the pixels rather than infer them.
+ *
+ * LINDBERGH_FBSTATS=1 reports how much of the presented buffer is non-black
+ * for the first few frames. LINDBERGH_SHOT=<path> writes one frame out as a
+ * BMP - the default framebuffer, exactly as presented, which is the honest
+ * thing to put in a README.
+ */
+static unsigned g_frame;
+
+static void write_bmp(const char *path, const unsigned char *bgr, int w, int h)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) { fprintf(stderr, "[shot] cannot write %s\n", path); return; }
+
+    int stride = (w * 3 + 3) & ~3;           /* BMP rows are 4-byte aligned */
+    uint32_t pix = (uint32_t)stride * (uint32_t)h;
+    uint32_t off = 14 + 40;
+    uint32_t size = off + pix;
+    unsigned char hdr[54];
+    memset(hdr, 0, sizeof hdr);
+    hdr[0] = 'B'; hdr[1] = 'M';
+    memcpy(hdr + 2, &size, 4);
+    memcpy(hdr + 10, &off, 4);
+    uint32_t hs = 40; memcpy(hdr + 14, &hs, 4);
+    int32_t wi = w, hi = h;
+    memcpy(hdr + 18, &wi, 4);
+    memcpy(hdr + 22, &hi, 4);               /* positive: bottom-up, as GL gives */
+    uint16_t planes = 1, bpp = 24;
+    memcpy(hdr + 26, &planes, 2);
+    memcpy(hdr + 28, &bpp, 2);
+    memcpy(hdr + 34, &pix, 4);
+    fwrite(hdr, 1, sizeof hdr, f);
+
+    unsigned char pad[3] = {0, 0, 0};
+    for (int y = 0; y < h; y++) {
+        fwrite(bgr + (size_t)y * w * 3, 1, (size_t)w * 3, f);
+        if (stride > w * 3) fwrite(pad, 1, (size_t)(stride - w * 3), f);
+    }
+    fclose(f);
+    fprintf(stderr, "[shot] wrote %s (%dx%d)\n", path, w, h);
+}
+
+static void inspect_frame(void)
+{
+    const char *shot = getenv("LINDBERGH_SHOT");
+    const char *stats = getenv("LINDBERGH_FBSTATS");
+    unsigned shot_at = 0;
+    if (shot) {
+        const char *n = getenv("LINDBERGH_SHOT_FRAME");
+        shot_at = (n && *n) ? (unsigned)atoi(n) : 300;
+    }
+    int want_stats = stats && *stats && *stats != '0' && g_frame < 8;
+
+    /* Where is the frame actually going? A game that renders into a
+     * framebuffer object and never brings it back leaves the default one
+     * untouched - and the call counts look identical either way. */
+    if (want_stats) {
+        GLint fbo = 0, dbuf = 0, vp[4] = {0,0,0,0};
+        glGetIntegerv(0x8CA6 /* GL_FRAMEBUFFER_BINDING_EXT */, &fbo);
+        glGetIntegerv(GL_DRAW_BUFFER, &dbuf);
+        glGetIntegerv(GL_VIEWPORT, vp);
+        GLboolean cm[4] = {1,1,1,1};
+        GLint dfunc = 0, afunc = 0;
+        GLint sc[4] = {0,0,0,0};
+        glGetIntegerv(GL_SCISSOR_BOX, sc);
+        fprintf(stderr, "[fb] scissor %s box %d,%d %dx%d\n",
+                glIsEnabled(GL_SCISSOR_TEST) ? "ON" : "off", sc[0], sc[1], sc[2], sc[3]);
+        glGetBooleanv(GL_COLOR_WRITEMASK, cm);
+        glGetIntegerv(GL_DEPTH_FUNC, &dfunc);
+        glGetIntegerv(GL_ALPHA_TEST_FUNC, &afunc);
+        fprintf(stderr, "[fb] FBO %d dbuf 0x%X vp %dx%d err 0x%X | mask %d%d%d%d "
+                        "depth(%d fn 0x%X) alpha(%d fn 0x%X) blend %d cull %d vp_arb %d fp_arb %d\n",
+                (int)fbo, (unsigned)dbuf, vp[2], vp[3], glGetError(),
+                cm[0], cm[1], cm[2], cm[3],
+                glIsEnabled(GL_DEPTH_TEST), (unsigned)dfunc,
+                glIsEnabled(GL_ALPHA_TEST), (unsigned)afunc,
+                glIsEnabled(GL_BLEND), glIsEnabled(GL_CULL_FACE),
+                glIsEnabled(0x8620 /* GL_VERTEX_PROGRAM_ARB */),
+                glIsEnabled(0x8804 /* GL_FRAGMENT_PROGRAM_ARB */));
+    }
+    if (!want_stats && !(shot && g_frame == shot_at)) return;
+
+    int w = g_win.w, h = g_win.h;
+    unsigned char *buf = (unsigned char *)malloc((size_t)w * h * 3);
+    if (!buf) return;
+
+    /* Check the instrument before trusting it. On one frame, paint a colour
+     * nothing else would produce and read it straight back: if that does not
+     * come through, the readback or the drawable is wrong and every other
+     * measurement here is meaningless. */
+    if (want_stats && g_frame == 3) {
+        glClearColor(0.0f, 0.25f, 0.5f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
+
+    glReadBuffer(GL_BACK);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, w, h, GL_BGR_EXT, GL_UNSIGNED_BYTE, buf);
+
+    if (want_stats) {
+        size_t lit = 0, n = (size_t)w * h;
+        unsigned peak = 0;
+        for (size_t i = 0; i < n; i++) {
+            unsigned v = buf[i*3] | buf[i*3+1] | buf[i*3+2];
+            if (v > 8) lit++;
+            if (v > peak) peak = v;
+        }
+        fprintf(stderr, "[fb] frame %u: %.1f%% non-black, peak channel %u\n",
+                g_frame, 100.0 * (double)lit / (double)n, peak);
+        fflush(stderr);
+    }
+    if (shot && g_frame == shot_at) write_bmp(shot, buf, w, h);
+    free(buf);
+}
+
 static void h_glXSwapBuffers(CPU *c)
 {
+    inspect_frame();            /* before the swap: the back buffer is the frame */
+    g_frame++;
     SwapBuffers(g_win.hdc);
     pump();
 }
