@@ -38,57 +38,91 @@
 
 /* ---- memory ----
  *
- * Every guest allocation goes through one family, and that is not fussiness.
- * The guest calls memalign for its SSE-aligned buffers and then releases them
- * with plain free(), exactly as glibc allows - but the host's aligned
- * allocator hands back pointers that only _aligned_free understands, and
- * feeding one to free() corrupts the heap. It does not fault where it happens
- * either; it faults later, somewhere else, as STATUS_HEAP_CORRUPTION in code
- * that did nothing wrong.
+ * The guest's allocator is built here on plain malloc rather than on the
+ * host's aligned one, and that is the second time this seam has bitten.
  *
- * So malloc, calloc, realloc, memalign and strdup all allocate the same way
- * and free releases it the same way. Everything gets 16-byte alignment, which
- * is what glibc's malloc gives on i386 anyway and what the game's SSE loads
- * want.
+ * First it was free(): the game memaligns its SSE buffers and releases them
+ * with plain free(), exactly as glibc allows, but _aligned_malloc memory only
+ * _aligned_free understands.
+ *
+ * Routing everything through _aligned_malloc fixed that and introduced the
+ * next one, because _aligned_realloc requires the SAME alignment the block was
+ * allocated with - and a block the game got from memalign(64, n) reallocated
+ * at 16 is undefined. MSVC notices and calls __fastfail, which raises
+ * STATUS_STACK_BUFFER_OVERRUN past every exception handler by design, so the
+ * process vanishes with no report at all.
+ *
+ * Owning the layout ends the whole category. A header immediately below the
+ * returned pointer carries the original block and the requested size, so
+ * free() and realloc() work on anything malloc, calloc, memalign or strdup
+ * returned, at any alignment, with no rules to remember. The magic word is
+ * also a check at a real trust boundary: a guest pointer that never came from
+ * here is refused rather than passed to free().
  */
 #define GUEST_ALIGN 16
+#define ALLOC_MAGIC 0xA110C8EDu
+
+typedef struct {
+    void    *base;
+    size_t   size;
+    uint32_t magic;
+} AllocHdr;
 
 static void *gmalloc(size_t n, size_t align)
 {
     if (align < GUEST_ALIGN) align = GUEST_ALIGN;
-#ifdef _WIN32
-    return _aligned_malloc(n ? n : 1, align);
-#else
-    void *p = NULL;
-    if (posix_memalign(&p, align, n ? n : 1) != 0) p = NULL;
-    return p;
-#endif
+    size_t hdr = sizeof(AllocHdr);
+
+    void *base = malloc(n + align + hdr);
+    if (!base) return NULL;
+
+    uintptr_t raw = (uintptr_t)base + hdr;
+    uintptr_t aligned = (raw + align - 1) & ~(uintptr_t)(align - 1);
+
+    AllocHdr *h = (AllocHdr *)(aligned - hdr);
+    h->base  = base;
+    h->size  = n;
+    h->magic = ALLOC_MAGIC;
+    return (void *)aligned;
+}
+
+static AllocHdr *hdr_of(void *p)
+{
+    AllocHdr *h = (AllocHdr *)((uintptr_t)p - sizeof(AllocHdr));
+    return h->magic == ALLOC_MAGIC ? h : NULL;
 }
 
 static void gfree(void *p)
 {
     if (!p) return;
-#ifdef _WIN32
-    _aligned_free(p);
-#else
-    free(p);
-#endif
+    AllocHdr *h = hdr_of(p);
+    if (!h) {
+        fprintf(stderr, "[libc] free(%p): not from this allocator, ignored\n", p);
+        return;
+    }
+    h->magic = 0;                       /* catch a double free as a bad pointer */
+    free(h->base);
 }
 
 static void *grealloc(void *p, size_t n)
 {
-#ifdef _WIN32
-    return _aligned_realloc(p, n ? n : 1, GUEST_ALIGN);
-#else
-    /* No aligned realloc in POSIX; posix_memalign already meets GUEST_ALIGN
-     * and realloc preserves at least malloc alignment, which is enough. */
-    return realloc(p, n ? n : 1);
-#endif
+    if (!p) return gmalloc(n, GUEST_ALIGN);
+    AllocHdr *h = hdr_of(p);
+    if (!h) {
+        fprintf(stderr, "[libc] realloc(%p): not from this allocator\n", p);
+        return NULL;
+    }
+    size_t old = h->size;
+    void *q = gmalloc(n, GUEST_ALIGN);
+    if (!q) return NULL;
+    memcpy(q, p, old < n ? old : n);
+    gfree(p);
+    return q;
 }
 
-static void h_malloc (CPU *c) { RET(gmalloc(A32(0), GUEST_ALIGN)); }
-static void h_realloc(CPU *c) { RET(grealloc(APTR(0), A32(1))); }
-static void h_free   (CPU *c) { gfree(APTR(0)); }
+static void h_malloc  (CPU *c) { RET(gmalloc(A32(0), GUEST_ALIGN)); }
+static void h_realloc (CPU *c) { RET(grealloc(APTR(0), A32(1))); }
+static void h_free    (CPU *c) { gfree(APTR(0)); }
 static void h_memalign(CPU *c) { RET(gmalloc(A32(1), A32(0))); }
 
 static void h_calloc(CPU *c)
@@ -99,9 +133,47 @@ static void h_calloc(CPU *c)
     RET(p);
 }
 
-static void h_memcpy (CPU *c) { RET(memcpy(APTR(0), APTR(1), A32(2))); }
-static void h_memmove(CPU *c) { RET(memmove(APTR(0), APTR(1), A32(2))); }
-static void h_memset (CPU *c) { RET(memset(APTR(0), AI32(1), A32(2))); }
+/* A pointer the guest supplied, checked before the host writes through it.
+ *
+ * This is a trust boundary: every address here was computed by recompiled
+ * code, and a single mis-lifted instruction upstream turns memcpy into a tool
+ * for scribbling over the host's own stacks and heap. The failure then lands
+ * somewhere else entirely, long afterwards, as a corrupted cookie or a
+ * corrupted arena, with nothing left to say where it came from.
+ *
+ * The guest's allocations come from the host heap and so have no tidy range to
+ * check against. What is checkable is the shape of a plainly broken pointer:
+ * the bottom of the address space is never mapped, and no call in this game
+ * moves a quarter of a gigabyte. */
+#define GUEST_LOW  0x10000u
+#define GUEST_HUGE (256u << 20)
+
+static int sane(const char *who, uint32_t va, uint32_t len)
+{
+    if (va < GUEST_LOW || len > GUEST_HUGE) {
+        fprintf(stderr, "[libc] %s(%#010x, %u bytes) refused - bad pointer or size\n",
+                who, va, len);
+        fflush(stderr);
+        return 0;
+    }
+    return 1;
+}
+
+static void h_memcpy(CPU *c)
+{
+    if (!sane("memcpy dst", A32(0), A32(2)) || !sane("memcpy src", A32(1), A32(2))) { RET(A32(0)); return; }
+    RET(memcpy(APTR(0), APTR(1), A32(2)));
+}
+static void h_memmove(CPU *c)
+{
+    if (!sane("memmove dst", A32(0), A32(2)) || !sane("memmove src", A32(1), A32(2))) { RET(A32(0)); return; }
+    RET(memmove(APTR(0), APTR(1), A32(2)));
+}
+static void h_memset(CPU *c)
+{
+    if (!sane("memset", A32(0), A32(2))) { RET(A32(0)); return; }
+    RET(memset(APTR(0), AI32(1), A32(2)));
+}
 static void h_memchr (CPU *c) { RET(memchr(APTR(0), AI32(1), A32(2))); }
 
 /* ---- strings ---- */
@@ -260,7 +332,11 @@ static void h_fprintf(CPU *c)
 static void h_sprintf(CPU *c)
 {
     int n = guest_format(g_fmtbuf, sizeof g_fmtbuf, ASTR(1), c, 2);
-    memcpy(ASTR(0), g_fmtbuf, (size_t)n + 1);
+    /* guest_format reports the length the format WOULD have produced, which is
+     * what sprintf returns - but only what fit is in the buffer, so copying n
+     * bytes would read past it. */
+    size_t have = strlen(g_fmtbuf);
+    memcpy(ASTR(0), g_fmtbuf, have + 1);
     RET(n);
 }
 static void h_snprintf(CPU *c)
@@ -291,7 +367,14 @@ static void h_fputc (CPU *c) { RET(fputc(AI32(0), (FILE *)APTR(1))); }
 static void h_puts  (CPU *c) { RET(puts(ASTR(0))); }
 
 /* ---- process and environment ---- */
-static void h_exit  (CPU *c) { exit(AI32(0)); }
+static void h_exit(CPU *c)
+{
+    /* Worth announcing. A game that decides to leave looks exactly like a
+     * game that crashed, unless it says so. */
+    fprintf(stderr, "[guest] exit(%d)\n", AI32(0));
+    fflush(stderr);
+    exit(AI32(0));
+}
 static void h_getenv(CPU *c) { RET(getenv(ASTR(0))); }
 static void h_getpid(CPU *c) { (void)c; RET(1); }
 static void h_rand  (CPU *c) { (void)c; RET(rand()); }

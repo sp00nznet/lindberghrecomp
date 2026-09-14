@@ -39,6 +39,7 @@ void hle_register_all(void)
 {
     hle_register_libc();
     hle_register_pthread();
+    hle_register_window();
 }
 
 /* Survey mode. Aborting on the first unimplemented import is the right default
@@ -60,8 +61,47 @@ static int permissive(void)
 
 static unsigned char *g_seen;
 
+/* Name every import as it is entered. Heavier than the survey - one line per
+ * call, not per distinct import - but it is the only way to see what was
+ * running when the process dies in a way no handler can catch, which
+ * __fastfail (STATUS_STACK_BUFFER_OVERRUN) does by design. */
+static int tracing(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *v = getenv("LINDBERGH_HLE_TRACE");
+        cached = (v && *v && *v != '0') ? 1 : 0;
+    }
+    return cached;
+}
+
+/* Stop deliberately at the Nth import call and report, because the failure
+ * this was written for kills the process with __fastfail - which bypasses
+ * every exception handler by design, so the crash reporter never runs. When a
+ * failure is deterministic, arriving just before it is as good as catching it.
+ *   LINDBERGH_HLE_BREAK=46211 */
+static void maybe_break(CPU *c, HleId id)
+{
+    static long counter, at = -1;
+    if (at < 0) {
+        const char *v = getenv("LINDBERGH_HLE_BREAK");
+        at = (v && *v) ? atol(v) : 0;
+    }
+    if (!at) return;
+    if (++counter >= at) {
+        fprintf(stderr, "[break] import call #%ld is %s\n", counter, hle_name(id));
+        guest_report_state("deliberate break");
+        exit(42);
+    }
+}
+
 void hle_call(CPU *c, HleId id)
 {
+    maybe_break(c, id);
+    if (tracing()) {
+        fprintf(stderr, "[call] %s\n", hle_name(id));
+        fflush(stderr);
+    }
     if ((unsigned)id < HLE_COUNT && g_hle_handlers[id]) {
         g_hle_handlers[id](c);
         return;

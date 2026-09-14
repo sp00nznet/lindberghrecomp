@@ -69,6 +69,10 @@ extern HleHandler g_hle_handlers[];
 
 void hle_call(CPU *c, HleId id);
 
+/* The PLT stub address for a named import, or 0. What glXGetProcAddressARB
+ * hands back, so the guest's indirect call through it routes like any other. */
+uint32_t hle_plt_address(const char *name);
+
 /* Give a named import a body. Binding by name and not by HLE_* id is what
  * keeps a handler file title-agnostic: HLE_memcpy only exists as an enumerator
  * if *this* game imports memcpy, so a file that said `g_hle_handlers[HLE_memcpy]`
@@ -82,6 +86,7 @@ int hle_bind(const char *name, HleHandler fn);
 void hle_register_all(void);
 void hle_register_libc(void);
 void hle_register_pthread(void);
+void hle_register_window(void);
 
 /* ---- the guest side of a call ----
  *

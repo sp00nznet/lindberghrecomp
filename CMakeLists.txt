@@ -43,6 +43,7 @@ function(lindbergh_runtime target generated_dir)
         "${LINDBERGH_RUNTIME_DIR}/hle.c"
         "${LINDBERGH_RUNTIME_DIR}/hle_libc.c"
         "${LINDBERGH_RUNTIME_DIR}/hle_pthread.c"
+        "${LINDBERGH_RUNTIME_DIR}/hle_window.c"
         "${LINDBERGH_RUNTIME_DIR}/dispatch.c"
         "${LINDBERGH_RUNTIME_DIR}/crash_report.c"
     )
@@ -66,6 +67,7 @@ function(lindbergh_runtime target generated_dir)
         # and the guest can be laid out where it expects to be.
         target_link_options(${target} PRIVATE
             /DYNAMICBASE:NO /LARGEADDRESSAWARE /STACK:8388608)
+        target_link_libraries(${target} PRIVATE opengl32 gdi32 user32)
     endif()
 endfunction()
 

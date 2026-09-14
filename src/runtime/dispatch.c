@@ -13,6 +13,7 @@
  */
 
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
 
 #include "lindbergh_rt.h"
@@ -91,6 +92,26 @@ void dispatch(CPU *c, uint32_t va)
     fprintf(stderr, "[dispatch] no lifted function at %#010x (called from esp=%#010x)\n",
             va, c->esp);
     abort();
+}
+
+/* Reverse of the PLT table: the stub address for a named import, or 0.
+ *
+ * This exists for glXGetProcAddressARB. The game asks the driver for an
+ * extension entry point and then CALLS the pointer it gets back - as a guest
+ * indirect call, through dispatch(). Handing it a real host function address
+ * would be useless: dispatch would look that up in the lifted table, find
+ * nothing, and abort.
+ *
+ * But the game also imports most of those extension functions through its own
+ * PLT, so their stub addresses are already routable tokens with handlers
+ * behind them. Returning the stub means the call goes back through the same
+ * path as a direct one, with no extra machinery at all. */
+uint32_t hle_plt_address(const char *name)
+{
+    for (size_t i = 0; i < NPLT; i++)
+        if (strcmp(hle_name(g_plt[i].id), name) == 0)
+            return g_plt[i].va;
+    return 0;
 }
 
 void dispatch_jmp(CPU *c, uint32_t va)
