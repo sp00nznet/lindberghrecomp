@@ -17,8 +17,9 @@
 **[Join the sp00nznet recomp Discord](https://discord.gg/CRpzGWZFcu)** — the
 community hub for sp00nznet's recomp projects.
 
-**Current version: v0.4.0 (September 2026).** The recompiled game boots and
-reaches `main()`. See [Status](#status) for what runs and what it asks for next.
+**Current version: v0.5.0 (September 2026).** A Lindbergh game runs and
+draws - *Let's Go Jungle* renders its attract mode at ~32 fps. See
+[Status](#status).
 
 ---
 
@@ -92,73 +93,44 @@ The subclass is 30 lines. Everything else the lifter already did.
 
 ## Status
 
-**The recompiled game runs its entire C runtime and reaches `main()`.**
-`_start`, every C++ static constructor in the binary, then `main` — all of it
-executing lifted x86, on a guest process this runtime builds.
+**A Lindbergh game runs and draws.** *Let's Go Jungle* boots from its own ELF,
+opens a window, and renders its attract mode at roughly 32 frames per second on
+the host GPU — as recompiled C, with no emulator and no interpreter.
 
 ```
-[crt] __libc_csu_init at 0x0859fff8
-[hle] glXGetProcAddressARB
+[gl] 96 of 96 entry points bound
 [crt] main at 0x08411ff0 (argc=1)
-...
-[hle] XOpenDisplay
+[pthread] created thread at 0x084f9d82, 1024 KB stack   ×3
+[window] 1360x768
+[glX] context created (pixel format 11)
+[glX] current: NVIDIA GeForce RTX 5070/PCIe/SSE2 / 4.6.0 NVIDIA 595.97
+[cg] indexed 197 precompiled shaders
 ```
+
+Measured over 60 seconds of attract mode:
+
+| | per run | per frame |
+|---|---:|---:|
+| `glXSwapBuffers` | 1,939 | — |
+| `glClear` | 21,320 | ~11 |
+| `glBegin` | 104,319 | ~54 |
+| `glBindTexture` | 106,550 | ~55 |
+| `glProgramStringARB` | 189 | — |
 
 | | |
 |---|---|
-| Disc carving | **Works.** Verified on four dumps — both filesystems found in each, payload extracted byte-exact. |
-| ELF32 parsing | **Works.** 2 `PT_LOAD`s, **31,759** functions, **406** PLT imports, 13 `DT_NEEDED` libraries. |
-| Lifting | **Works.** All 31,759 functions, 28 s, 1,707,769 lines of C across 80 translation units. |
-| Instruction coverage | **99.94%** — 962 `/* TODO */ abort()` lines left. |
-| Compiles and links | **Yes.** A 25 MB native executable. |
-| Boots | **Yes.** CRT, constructors, `main`. |
-| Runs | Stops at `XOpenDisplay`, which is the right place — see below. |
-
-### What the game actually asks for
-
-Survey mode (`LINDBERGH_HLE_PERMISSIVE=1`) reports each unbound import once and
-carries on, so one run enumerates the startup path in order rather than costing
-one 80-TU rebuild per import:
-
-```
-glXGetProcAddressARB            <- the only import the constructors need
-pthread_mutex_lock / unlock
-getcwd, realpath                <- works out where it is installed
-pthread_mutexattr_*, pthread_mutex_init, pthread_cond_init
-pthread_attr_*, sched_get_priority_max / min
-pthread_create                  <- spawns a worker thread
-pthread_cond_wait               <- and waits on it
-XSetErrorHandler, XOpenDisplay  <- opens the display
-```
-
-That is a far smaller startup than 406 imports suggested, and it puts the next
-two jobs in order: **pthread** on Win32 threads, then the **window seam**.
-
-### The window seam
-
-`XOpenDisplay` is where this stops, and it is where it should. Reimplementing
-50 Xlib calls on Windows so they can hand a GLX context to WGL is absurd. The
-game opens a Display, creates a Window and makes a GL context — so the seam is
-cut there: a Win32 window with a WGL context behind an opaque `Display *` the
-game never looks inside. 68 X11 and GLX imports collapse to about a dozen
-shims.
+| Disc carving | **Works.** Four dumps, both filesystems found in each, payload byte-exact. |
+| ELF32 parsing | **Works.** 31,759 functions, 406 PLT imports, 13 `DT_NEEDED`. |
+| Lifting | **Works.** All 31,759 in 28 s, 1.7 M lines across 80 translation units. |
+| Instruction coverage | **99.96%** — 622 `RECOMP_TODO` lines, none on any path reached. |
+| Runtime | Image mapping, kernel, threads, window, GL, Cg, guest-function overrides. |
+| Renders | **Yes.** |
 
 ### What is still unlifted
 
-962 lines, and none of it is on the startup path:
-
-| | count |
-|---|---:|
-| MMX — `movq` `pmaddwd` `paddd` `paddsw` `pshufw` `psrad` | 537 |
-| packed SSE arithmetic — `shufps` `mulps` `addps` | 231 |
-| x87 cases the FPU path misses | 102 |
-| `out` / `in` — port I/O, which userspace has no business doing | 83 |
-| everything else | 9 |
-
-MMX is a second register file and a second job; packed SSE was left out
-deliberately rather than guessed at, because a plausible-looking wrong lane is
-worse than an honest `abort()`. Both belong upstream in
-[pcrecomp](https://github.com/sp00nznet/pcrecomp).
+622 lines, none of them reached: MMX (`movq`, `pmaddwd`, `paddd`, `pshufw`),
+`out`/`in` port I/O that userspace has no business doing, and packed BCD. MMX
+is a second register file and a second job.
 
 ### The binary is not stripped
 
