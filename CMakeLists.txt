@@ -42,6 +42,7 @@ function(lindbergh_runtime target generated_dir)
         "${LINDBERGH_RUNTIME_DIR}/syscall.c"
         "${LINDBERGH_RUNTIME_DIR}/hle.c"
         "${LINDBERGH_RUNTIME_DIR}/hle_libc.c"
+        "${LINDBERGH_RUNTIME_DIR}/hle_pthread.c"
         "${LINDBERGH_RUNTIME_DIR}/dispatch.c"
         "${LINDBERGH_RUNTIME_DIR}/crash_report.c"
     )

@@ -24,10 +24,14 @@
 
 #include "lindbergh_rt.h"
 
-/* The CPU currently executing guest code.
- * ponytail: one global, because the guest is single-threaded until pthread
- * support lands. Make it thread-local when a second guest thread exists. */
-static CPU *g_current;
+/* The CPU currently executing guest code. Thread-local: every guest thread
+ * runs on its own CPU struct, so a single global would report whichever thread
+ * happened to start last rather than the one that faulted. */
+#ifdef _MSC_VER
+static __declspec(thread) CPU *g_current;
+#else
+static __thread CPU *g_current;
+#endif
 
 void guest_set_current_cpu(CPU *c) { g_current = c; }
 

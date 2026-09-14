@@ -81,6 +81,7 @@ int hle_bind(const char *name, HleHandler fn);
  * binds its own on top. */
 void hle_register_all(void);
 void hle_register_libc(void);
+void hle_register_pthread(void);
 
 /* ---- the guest side of a call ----
  *

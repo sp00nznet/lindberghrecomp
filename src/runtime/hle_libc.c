@@ -28,6 +28,8 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <direct.h>
+#include <stdlib.h>
 #else
 #include <unistd.h>
 #endif
@@ -513,6 +515,33 @@ static void h_libc_freeres(CPU *c) { (void)c; }
 /* The game only ever asks for the C locale, and that is the one we are in. */
 static void h_setlocale(CPU *c) { RET("C"); }
 
+/* ---- where the game thinks it is ----
+ *
+ * The game calls these to work out its own install directory and then builds
+ * every data path from the result, so a wrong answer here is a wrong answer
+ * for every file it opens afterwards. Both return forward-slash-free Windows
+ * paths, which the guest never inspects - it only concatenates - so no
+ * translation is needed. */
+static void h_getcwd(CPU *c)
+{
+#ifdef _WIN32
+    RET(_getcwd(ASTR(0), AI32(1)));
+#else
+    RET(getcwd(ASTR(0), A32(1)));
+#endif
+}
+
+static void h_realpath(CPU *c)
+{
+#ifdef _WIN32
+    /* _fullpath allocates when handed NULL, same as realpath does; when the
+     * guest supplies a buffer it must be PATH_MAX, which is what it passes. */
+    RET(_fullpath(A32(1) ? ASTR(1) : NULL, ASTR(0), 260));
+#else
+    RET(realpath(ASTR(0), A32(1) ? ASTR(1) : NULL));
+#endif
+}
+
 void hle_register_libc(void)
 {
     ctype_init();
@@ -569,6 +598,8 @@ void hle_register_libc(void)
     hle_bind("__deregister_frame_info_bases", h_deregister_frame_info_bases);
     hle_bind("__libc_freeres", h_libc_freeres);
     hle_bind("setlocale", h_setlocale);
+    hle_bind("getcwd", h_getcwd);
+    hle_bind("realpath", h_realpath);
     hle_bind("__divdi3", h_divdi3);
     hle_bind("__udivdi3", h_udivdi3);
     hle_bind("__umoddi3", h_umoddi3);
