@@ -140,7 +140,7 @@ def main():
         # continuation is the two characters backslash-n instead of a
         # backslash ending the line - which is a header no compiler accepts,
         # and which shipped once already because nothing here looked.
-        for fn in ("recomp_imports.h", "recomp_funcs_list.h"):
+        for fn in ("recomp_imports.h", "recomp_funcs_list.h", "recomp_plt.h"):
             text = open(os.path.join(out, fn)).read()
             assert BS + "n" not in text, fn + ": literal backslash-n, not a line continuation"
             for line in text.splitlines()[:-1]:

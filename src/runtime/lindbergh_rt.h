@@ -113,6 +113,15 @@ void dispatch_jmp(CPU *c, uint32_t va);
  * pushed cdecl-style and esp is restored afterwards. */
 uint32_t guest_call(CPU *c, uint32_t fn, const uint32_t *args, int nargs);
 
+/* ---- bring-up diagnostics ----
+ * A fault in lifted code tells a debugger nothing useful. These report the
+ * guest machine instead: its registers, and the last 64 addresses dispatch()
+ * sent control to. */
+void guest_install_crash_handler(void);
+void guest_set_current_cpu(CPU *c);
+void guest_report_state(const char *why);
+void guest_trace_dispatch(uint32_t va);
+
 #ifdef __cplusplus
 }
 #endif

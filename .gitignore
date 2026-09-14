@@ -20,11 +20,14 @@ gen/
 recomp_funcs.c
 recomp_funcs_list.h
 recomp_imports.h
+recomp_plt.h
 
 # ...except the self-check's stand-ins for them, which are hand-written and
 # are the only reason the runtime builds without a game.
 !tests/selftest/recomp_funcs_list.h
 !tests/selftest/recomp_imports.h
+!tests/selftest/recomp_plt.h
+recomp_plt.h
 
 # Game media. Bring your own; none of it belongs here.
 *.iso

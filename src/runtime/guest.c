@@ -146,6 +146,7 @@ uint32_t guest_entry(void) { return g_entry; }
 void guest_init_cpu(CPU *c)
 {
     memset(c, 0, sizeof *c);
+    guest_set_current_cpu(c);
     c->esp = g_stack_pointer;
     c->eip = g_entry;
 }

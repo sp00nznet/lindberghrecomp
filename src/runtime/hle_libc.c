@@ -34,29 +34,73 @@
 
 #include "lindbergh_rt.h"
 
-/* ---- memory ---- */
-static void h_malloc (CPU *c) { RET(malloc(A32(0))); }
-static void h_calloc (CPU *c) { RET(calloc(A32(0), A32(1))); }
-static void h_realloc(CPU *c) { RET(realloc(APTR(0), A32(1))); }
-static void h_free   (CPU *c) { free(APTR(0)); }
+/* ---- memory ----
+ *
+ * Every guest allocation goes through one family, and that is not fussiness.
+ * The guest calls memalign for its SSE-aligned buffers and then releases them
+ * with plain free(), exactly as glibc allows - but the host's aligned
+ * allocator hands back pointers that only _aligned_free understands, and
+ * feeding one to free() corrupts the heap. It does not fault where it happens
+ * either; it faults later, somewhere else, as STATUS_HEAP_CORRUPTION in code
+ * that did nothing wrong.
+ *
+ * So malloc, calloc, realloc, memalign and strdup all allocate the same way
+ * and free releases it the same way. Everything gets 16-byte alignment, which
+ * is what glibc's malloc gives on i386 anyway and what the game's SSE loads
+ * want.
+ */
+#define GUEST_ALIGN 16
+
+static void *gmalloc(size_t n, size_t align)
+{
+    if (align < GUEST_ALIGN) align = GUEST_ALIGN;
+#ifdef _WIN32
+    return _aligned_malloc(n ? n : 1, align);
+#else
+    void *p = NULL;
+    if (posix_memalign(&p, align, n ? n : 1) != 0) p = NULL;
+    return p;
+#endif
+}
+
+static void gfree(void *p)
+{
+    if (!p) return;
+#ifdef _WIN32
+    _aligned_free(p);
+#else
+    free(p);
+#endif
+}
+
+static void *grealloc(void *p, size_t n)
+{
+#ifdef _WIN32
+    return _aligned_realloc(p, n ? n : 1, GUEST_ALIGN);
+#else
+    /* No aligned realloc in POSIX; posix_memalign already meets GUEST_ALIGN
+     * and realloc preserves at least malloc alignment, which is enough. */
+    return realloc(p, n ? n : 1);
+#endif
+}
+
+static void h_malloc (CPU *c) { RET(gmalloc(A32(0), GUEST_ALIGN)); }
+static void h_realloc(CPU *c) { RET(grealloc(APTR(0), A32(1))); }
+static void h_free   (CPU *c) { gfree(APTR(0)); }
+static void h_memalign(CPU *c) { RET(gmalloc(A32(1), A32(0))); }
+
+static void h_calloc(CPU *c)
+{
+    size_t n = (size_t)A32(0) * A32(1);
+    void *p = gmalloc(n, GUEST_ALIGN);
+    if (p) memset(p, 0, n);
+    RET(p);
+}
+
 static void h_memcpy (CPU *c) { RET(memcpy(APTR(0), APTR(1), A32(2))); }
 static void h_memmove(CPU *c) { RET(memmove(APTR(0), APTR(1), A32(2))); }
 static void h_memset (CPU *c) { RET(memset(APTR(0), AI32(1), A32(2))); }
 static void h_memchr (CPU *c) { RET(memchr(APTR(0), AI32(1), A32(2))); }
-
-static void h_memalign(CPU *c)
-{
-    /* memalign(alignment, size). The host has neither spelling: aligned_alloc
-     * wants size to be a multiple of alignment, and _aligned_malloc takes the
-     * two the other way round. */
-#ifdef _WIN32
-    RET(_aligned_malloc(A32(1), A32(0)));
-#else
-    void *p = NULL;
-    if (posix_memalign(&p, A32(0), A32(1)) != 0) p = NULL;
-    RET(p);
-#endif
-}
 
 /* ---- strings ---- */
 static void h_strlen  (CPU *c) { RET(strlen(ASTR(0))); }
@@ -77,7 +121,7 @@ static void h_strdup(CPU *c)
      * is this file's free(), so it must come from this file's malloc(). */
     const char *s = ASTR(0);
     size_t n = strlen(s) + 1;
-    char *p = (char *)malloc(n);
+    char *p = (char *)gmalloc(n, GUEST_ALIGN);
     if (p) memcpy(p, s, n);
     RET(p);
 }
@@ -449,6 +493,26 @@ static void h_libc_start_main(CPU *c)
     exit((int)rc);
 }
 
+/* ---- libgcc's exception-frame registry ----
+ *
+ * __register_frame_info_bases(begin, ob, tbase, dbase) hands libgcc the
+ * .eh_frame section so a later throw can walk it. Nothing here unwinds DWARF -
+ * the _Unwind_* family is unimplemented on purpose - so recording the pointer
+ * would serve nobody, and a no-op is the honest translation rather than a
+ * shortcut. If this game ever throws, it will stop in _Unwind_RaiseException
+ * with its own name on it, which is the right place to find out.
+ *
+ * The deregister form returns the object it was given; the CRT stores that
+ * result, so returning 0 would be a lie it might notice. */
+static void h_register_frame_info_bases(CPU *c) { RET(0); }
+static void h_deregister_frame_info_bases(CPU *c) { RET(A32(0)); }
+
+/* Called from exit() to release glibc's own caches. There are none. */
+static void h_libc_freeres(CPU *c) { (void)c; }
+
+/* The game only ever asks for the C locale, and that is the one we are in. */
+static void h_setlocale(CPU *c) { RET("C"); }
+
 void hle_register_libc(void)
 {
     ctype_init();
@@ -501,6 +565,10 @@ void hle_register_libc(void)
     hle_bind("__ctype_toupper_loc", h_ctype_toupper_loc);
     hle_bind("__errno_location", h_errno_location);
     hle_bind("__libc_start_main", h_libc_start_main);
+    hle_bind("__register_frame_info_bases", h_register_frame_info_bases);
+    hle_bind("__deregister_frame_info_bases", h_deregister_frame_info_bases);
+    hle_bind("__libc_freeres", h_libc_freeres);
+    hle_bind("setlocale", h_setlocale);
     hle_bind("__divdi3", h_divdi3);
     hle_bind("__udivdi3", h_udivdi3);
     hle_bind("__umoddi3", h_umoddi3);
