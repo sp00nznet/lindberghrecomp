@@ -153,6 +153,43 @@ void       hle_register_vidmode(void);
 void       hle_register_matrix(void);
 void       hle_register_console(void);
 void       hle_register_sega(void);
+void       hle_register_glut(void);
+void       hle_register_cxx(void);
+
+/* ---- host input ----
+ *
+ * One queue, filled by the window procedure and drained by whoever drives the
+ * game loop. A light gun is a mouse: the cabinet's gun reports where on the
+ * screen it points and whether the trigger is down, which is what a pointer
+ * and a button already are. */
+enum { HOST_IN_MOTION = 1, HOST_IN_MOUSE, HOST_IN_KEY, HOST_IN_KEYUP,
+       HOST_IN_SPECIAL };
+
+typedef struct { int kind, a, b, c, d; } HostInput;
+
+int        hle_stub_call(CPU *c, uint32_t va);
+/* The cabinet's switches and its gun, as a desktop can supply them. */
+enum { CAB_P1_START = 1u << 0, CAB_P2_START = 1u << 1,
+       CAB_TEST     = 1u << 2, CAB_SERVICE  = 1u << 3,
+       CAB_P1_TRIGGER = 1u << 4, CAB_P1_RELOAD = 1u << 5 };
+
+typedef struct {
+    unsigned coins[2];        /* only ever counts up, like a coin mech */
+    unsigned buttons;
+    int gun_x, gun_y;
+    int screen_w, screen_h;
+} CabinetInput;
+
+void       host_cabinet_input(CabinetInput *out);
+int        host_input_pop(HostInput *out);
+void       host_mouse_state(int *x, int *y, int *buttons);
+
+/* The host window and its GL context, shared by the GLX and GLUT seams. */
+void       host_window_hint(int w, int h);
+int        host_window_open(const char *title);
+int        host_gl_context(void);
+void       host_pump(void);
+void       host_swap(void);
 void       hle_register_gl(void);
 
 /* A callable address for a GL entry point the game asks for by name but does

@@ -141,6 +141,15 @@ void dispatch(CPU *c, uint32_t va)
      * argument 0 at esp+0. */
     if (gl_token_call_entry(c, va)) { g_depth--; return; }
 
+    /* A symbol dlsym handed out for a library this runtime does not load.
+     * Same stack shape, and doing nothing beats dispatching to address zero. */
+    if (va >= 0xF1000000u) {
+        uint32_t saved = c->esp;
+        c->esp += 4;
+        if (hle_stub_call(c, va)) { g_depth--; return; }
+        c->esp = saved;
+    }
+
     /* A host body standing in for a guest function. Checked first, so it wins
      * over the lifted version; the range test costs two compares. */
     HleHandler ov = guest_find_override(va);

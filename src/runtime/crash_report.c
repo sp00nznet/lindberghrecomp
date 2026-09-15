@@ -16,6 +16,8 @@
  * dies and a debugger still gets its turn. Nothing here allocates.
  */
 
+#include <signal.h>
+#include <stdlib.h>
 #include <stdio.h>
 
 #ifdef _WIN32
@@ -67,8 +69,17 @@ static void ring_persist(void)
 
 void guest_trace_dispatch(uint32_t va)
 {
+    /* How often the ring reaches the disc. Every few thousand calls is free
+     * and enough to see roughly where a run died; chasing an exact
+     * instruction wants LINDBERGH_TRACE_EVERY=1, which is slow and exact. */
+    static unsigned every;
+    if (!every) {
+        const char *v = getenv("LINDBERGH_TRACE_EVERY");
+        every = (v && *v) ? (unsigned)atoi(v) : RING_FLUSH;
+        if (!every) every = RING_FLUSH;
+    }
     g_trace[g_trace_i++ & (TRACE_N - 1)] = va;
-    if (++g_since_flush >= RING_FLUSH) {
+    if (++g_since_flush >= every) {
         g_since_flush = 0;
         ring_persist();
     }
@@ -176,8 +187,69 @@ static LONG CALLBACK on_exception(EXCEPTION_POINTERS *ep)
     return EXCEPTION_CONTINUE_SEARCH;      /* still crash; let a debugger see it */
 }
 
+/* The CRT's invalid parameter handler.
+ *
+ * Hand a Microsoft CRT function something it refuses - a null string, a
+ * closed FILE - and it does not return an error. It calls __fastfail, which
+ * raises 0xC0000409 and takes the process down past every vectored exception
+ * handler and every atexit hook. Nothing is printed, nothing is flushed, and
+ * from the outside it is indistinguishable from a silent crash.
+ *
+ * Which is exactly what it looked like, for several builds. Taking the
+ * handler means the guest state gets reported like any other fault. */
+static void on_invalid_parameter(const wchar_t *expr, const wchar_t *func,
+                                 const wchar_t *file, unsigned line,
+                                 uintptr_t reserved)
+{
+    (void)reserved;
+    fprintf(stderr, "\n[crt] invalid parameter in %ls (%ls:%u): %ls\n",
+            func ? func : L"?", file ? file : L"?", line,
+            expr ? expr : L"(no expression)");
+    fflush(stderr);
+    guest_report_state("invalid parameter passed to a host library function");
+    exit(45);
+}
+
+static void on_abort_signal(int sig)
+{
+    (void)sig;
+    fprintf(stderr, "\n[abort] something called abort()\n");
+    fflush(stderr);
+    guest_report_state("abort");
+    _exit(49);
+}
+
+static void on_exit_note(void)
+{
+    fprintf(stderr, "[exit] process is exiting\n");
+    fflush(stderr);
+}
+
 void guest_install_crash_handler(void)
 {
+    /* Unbuffered, before anything else can be lost.
+     *
+     * stderr is block buffered the moment it is redirected to a file, so a
+     * process that dies without unwinding takes its last few thousand
+     * characters with it - including, most of the time, the one line that
+     * said what went wrong. Every report here ends in fflush for that reason,
+     * but the lines that matter are often the ordinary ones just before. */
+    setvbuf(stderr, NULL, _IONBF, 0);
+    /* Who ends the process. A clean exit with nothing said looks exactly like
+     * a crash from the outside, and it took a Windows exit code of zero to
+     * notice that Ghost Squad was leaving rather than falling over. */
+    atexit(on_exit_note);
+    _set_invalid_parameter_handler(on_invalid_parameter);
+
+    /* Stop abort() from becoming a fail-fast.
+     *
+     * By default the Microsoft CRT turns abort() into __fastfail, which the
+     * kernel handles directly: no vectored handler, no atexit, no output, and
+     * an exit code of 0xC0000409 that says only "something gave up". Clearing
+     * _CALL_REPORTFAULT makes it an ordinary abort again, which SIGABRT can
+     * catch and report like anything else. */
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+    signal(SIGABRT, on_abort_signal);
     AddVectoredExceptionHandler(1, on_exception);
 }
 #else

@@ -47,6 +47,8 @@ void hle_register_all(void)
     hle_register_matrix();
     hle_register_console();
     hle_register_sega();
+    hle_register_glut();
+    hle_register_cxx();
     hle_register_gl();
     hle_register_cg();
 }

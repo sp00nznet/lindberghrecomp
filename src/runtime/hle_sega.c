@@ -144,12 +144,77 @@ static void jvs_command(const unsigned char *p)
         ack_report();
         for (unsigned i = 0; i < sizeof JVS_FEATURES; i++) ack_byte(JVS_FEATURES[i]);
         break;
-    case 0x20:                                   /* switches: test, then players */
+    case 0x20: {                                 /* switches: test, then players */
+        /* One test byte, then `bytes` bytes for each of `players`. In the
+         * first of those, bit 7 is start and bit 1 is the first push button,
+         * which for a gun cabinet is the trigger. */
+        CabinetInput in;
+        host_cabinet_input(&in);
+        unsigned players = p[1], bytes = p[2];
+        {   /* Confirm the game is actually asking, and with what shape. */
+            static int shown;
+            if (shown < 3 && getenv("LINDBERGH_JVS")) {
+                shown++;
+                fprintf(stderr, "[jvs] switch read: %u players x %u bytes\n",
+                        players, bytes);
+            }
+        }
         ack_report();
-        ack_zeros(1u + (unsigned)p[1] * (unsigned)p[2]);
+        ack_byte((in.buttons & CAB_TEST) ? 0x80 : 0x00);
+        for (unsigned pl = 0; pl < players; pl++) {
+            unsigned char b0 = 0;
+            if (pl == 0) {
+                if (in.buttons & CAB_P1_START)   b0 |= 0x80;
+                if (in.buttons & CAB_SERVICE)    b0 |= 0x40;
+                if (in.buttons & CAB_P1_TRIGGER) b0 |= 0x02;
+                if (in.buttons & CAB_P1_RELOAD)  b0 |= 0x01;
+            } else if (pl == 1) {
+                if (in.buttons & CAB_P2_START)   b0 |= 0x80;
+            }
+            ack_byte(b0);
+            ack_zeros(bytes > 1 ? bytes - 1 : 0);
+        }
         break;
-    case 0x21: ack_report(); ack_zeros((unsigned)p[1] * 2u); break;  /* coins */
-    case 0x22: ack_report(); ack_zeros((unsigned)p[1] * 2u); break;  /* analog */
+    }
+    case 0x21: {                                 /* coins */
+        /* Two bytes a slot: the top two bits are the mechanism's condition,
+         * zero meaning normal, and the remaining fourteen are the count. */
+        CabinetInput in;
+        host_cabinet_input(&in);
+        ack_report();
+        for (unsigned slot = 0; slot < p[1]; slot++) {
+            unsigned n = (slot < 2 ? in.coins[slot] : 0) & 0x3FFF;
+            ack_byte((unsigned char)(n >> 8));
+            ack_byte((unsigned char)(n & 0xFF));
+        }
+        break;
+    }
+    case 0x22: {                                 /* analog: where the gun points */
+        CabinetInput in;
+        host_cabinet_input(&in);
+        int w = in.screen_w > 0 ? in.screen_w : 1;
+        int h = in.screen_h > 0 ? in.screen_h : 1;
+        unsigned x = (unsigned)((long)in.gun_x * 65535 / w);
+        unsigned y = (unsigned)((long)in.gun_y * 65535 / h);
+        if (in.gun_x < 0) x = 0; if (x > 65535) x = 65535;
+        if (in.gun_y < 0) y = 0; if (y > 65535) y = 65535;
+        ack_report();
+        {   /* LINDBERGH_NO_GUN=1 reports a centred, still gun. A test, not a
+             * setting: it tells apart a game upset by where the gun is from a
+             * game upset by something else entirely. */
+            static int flat = -1;
+            if (flat < 0) { const char *v = getenv("LINDBERGH_NO_GUN");
+                            flat = (v && *v && *v != '0') ? 1 : 0; }
+            for (unsigned ch = 0; ch < p[1]; ch++) {
+                unsigned v = flat ? 0x8000u
+                           : (ch == 0 || ch == 2) ? x
+                           : (ch == 1 || ch == 3) ? y : 0x8000u;
+                ack_byte((unsigned char)(v >> 8));
+                ack_byte((unsigned char)(v & 0xFF));
+            }
+        }
+        break;
+    }
     case 0x23: ack_report(); ack_zeros((unsigned)p[1] * 2u); break;  /* rotary */
     default:                                     /* acknowledged, nothing to say */
         ack_report();
@@ -381,9 +446,41 @@ static void h_set_error(CPU *c)
     RET(0);
 }
 
+/* ---- the security dongle ----
+ *
+ * A Lindbergh cabinet carries a hardware dongle, and a game does not simply
+ * ask whether it is present. Ghost Squad Evolution generates sixteen random
+ * bytes, has the dongle transform them, and checks the answer. The key for
+ * that transform lives inside the device; it is not in the disc, not in the
+ * binary, and not recoverable from either.
+ *
+ * So there is nothing to emulate here and no cleverness that would help. The
+ * cabinet this game ran on had the dongle fitted, and the runtime makes the
+ * same statement - the licence is present - by answering the one predicate
+ * the game gates on, and saying so once on the way past. The challenge and
+ * response themselves are left entirely alone.
+ *
+ * Bound by symbol name, so it applies to a game that has these and is simply
+ * absent from one that does not. */
+static void h_dongle_valid(CPU *c)
+{
+    static int said;
+    if (!said) {
+        said = 1;
+        fprintf(stderr, "[sega] no security dongle is fitted; treating the "
+                        "licence as present\n");
+    }
+    RET(1);
+}
+
 void hle_register_sega(void)
 {
     int n = 0;
+
+    /* Ghost Squad Evolution gates its whole boot on this one predicate;
+     * a game without these symbols simply does not get the override. */
+    n += guest_override("_Z18is_dongle_validatev", h_dongle_valid);
+    n += guest_override("_Z21check_dongle_validatev", h_dongle_valid);
 
     /* The base board. amLibInit failing is what produces "SEGA BaseBD not
      * available", and everything else is gated behind it. */

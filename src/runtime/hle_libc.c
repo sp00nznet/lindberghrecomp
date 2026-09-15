@@ -177,6 +177,137 @@ static void h_malloc(CPU *c)
 }
 static void h_realloc (CPU *c) { RET(grealloc(APTR(0), A32(1))); }
 static void h_free    (CPU *c) { gfree(APTR(0)); }
+
+/* ---- C++ allocation ----
+ *
+ * operator new and its friends, which a C++ game reaches for constantly and
+ * which are not libc. Let's Go Jungle imports none of these - its engine
+ * allocates through its own pools - so nothing here needed them until Ghost
+ * Squad Evolution, which imports all four. An unbound operator new returns
+ * zero under permissive mode, every construction writes through a null, and
+ * the game dies before it reaches its own main loop with nothing to say why.
+ *
+ * new never returns null in C++ - it throws - so a failure here is not
+ * something the game will check for, and there is nothing useful to do about
+ * it other than say so. */
+static void h_op_new(CPU *c)
+{
+    void *p = gmalloc(A32(0), GUEST_ALIGN);
+    if (!p) fprintf(stderr, "[libc] operator new(%u) failed\n", A32(0));
+    RET(p);
+}
+
+static void h_op_delete(CPU *c) { gfree(APTR(0)); RET(0); }
+
+/* isprint and friends get asked about bytes above 127, where the host's
+ * locale-aware version is free to disagree with the guest's. The C locale
+ * answer is the one a 2007 arcade binary was built against. */
+/* The game's own assertions. Unbound, one is a silent exit; bound, it names
+ * the file, the line and the expression that failed, which is the game
+ * telling you exactly what it does not like about its environment. */
+static void h_assert_fail(CPU *c)
+{
+    fprintf(stderr, "[assert] %s failed at %s:%u in %s\n",
+            A32(0) ? ASTR(0) : "(null)",
+            A32(1) ? ASTR(1) : "(null)",
+            A32(2),
+            A32(3) ? ASTR(3) : "(null)");
+    fflush(stderr);
+    guest_report_state("assertion failed");
+    exit(44);
+}
+
+/* Defined with the maths handlers further down; these need them earlier. */
+static double guest_arg_d(CPU *c, unsigned i);
+static float  guest_arg_f(CPU *c, unsigned i);
+
+static void h_atan2(CPU *c)  { RETF(atan2(guest_arg_d(c, 0), guest_arg_d(c, 2))); }
+static void h_atan2f(CPU *c) { RETF(atan2f(guest_arg_f(c, 0), guest_arg_f(c, 1))); }
+static void h_fmodf(CPU *c)  { RETF(fmodf(guest_arg_f(c, 0), guest_arg_f(c, 1))); }
+static void h_sqrt(CPU *c)   { RETF(sqrt(guest_arg_d(c, 0))); }
+static void h_sqrtf(CPU *c)  { RETF(sqrtf(guest_arg_f(c, 0))); }
+static void h_srand(CPU *c)  { srand(A32(0)); RET(0); }
+/* Guest pointers are checked before they reach a CRT function. A null here
+ * is not a crash in the guest's world - it is on Windows, and a silent one. */
+static void h_clearerr(CPU *c) { if (APTR(0)) clearerr((FILE *)APTR(0)); RET(0); }
+static void h_sysconf(CPU *c)  { RET(A32(0) == 30 ? 4096u : 1u); }  /* _SC_PAGESIZE */
+static void h_sleep(CPU *c)    { Sleep(A32(0) * 1000u); RET(0); }
+static void h_strcasecmp(CPU *c)
+{
+    const char *a = A32(0) ? ASTR(0) : "", *b = A32(1) ? ASTR(1) : "";
+    RET((uint32_t)_stricmp(a, b));
+}
+static void h_strncasecmp(CPU *c)
+{
+    const char *a = A32(0) ? ASTR(0) : "", *b = A32(1) ? ASTR(1) : "";
+    RET((uint32_t)_strnicmp(a, b, A32(2)));
+}
+
+/* qsort, with the comparison living in lifted code.
+ *
+ * The callback is the whole difficulty: it is a guest function, so every
+ * comparison is a call back across the seam. An insertion sort keeps that
+ * simple and needs no scratch beyond one element - these are short arrays
+ * that a game sorts once, not a hot path, and a subtle quicksort that calls
+ * into the guest from inside its own recursion is not worth the risk. */
+static void h_qsort(CPU *c)
+{
+    uint32_t base = A32(0), n = A32(1), sz = A32(2), cmp = A32(3);
+    /* Every one of these comes from the guest, and a wrong one does not fail
+     * politely: the sort walks off the end of what it was given and writes
+     * over the host's own memory, which ends as a fail-fast with no handler
+     * and nothing printed. Bound them all. */
+    if (getenv("LINDBERGH_ALLOC"))
+        fprintf(stderr, "[libc] qsort base 0x%08X n %u size %u cmp 0x%08X\n",
+                base, n, sz, cmp);
+    if (!base || !cmp || sz == 0 || n < 2) { RET(0); return; }
+    if (n > (1u << 20) || (unsigned long long)n * sz > (64ull << 20)) {
+        fprintf(stderr, "[libc] qsort refused: %u elements of %u bytes\n", n, sz);
+        RET(0);
+        return;
+    }
+    if (sz > 4096) { fprintf(stderr, "[libc] qsort element %u bytes, refusing\n", sz);
+                     RET(0); return; }
+
+    unsigned char *tmp = (unsigned char *)malloc(sz);
+    if (!tmp) { RET(0); return; }
+    unsigned char *a = (unsigned char *)(uintptr_t)base;
+
+    for (uint32_t i = 1; i < n; i++) {
+        memcpy(tmp, a + (size_t)i * sz, sz);
+        uint32_t j = i;
+        while (j > 0) {
+            uint32_t args[2];
+            args[0] = base + (uint32_t)((j - 1) * sz);
+            args[1] = (uint32_t)(uintptr_t)tmp;
+            if ((int32_t)guest_call(c, cmp, args, 2) <= 0) break;
+            memcpy(a + (size_t)j * sz, a + (size_t)(j - 1) * sz, sz);
+            j--;
+        }
+        memcpy(a + (size_t)j * sz, tmp, sz);
+    }
+    free(tmp);
+    RET(0);
+}
+
+static void h_atanf(CPU *c) { RETF(atanf(guest_arg_f(c, 0))); }
+static void h_powf(CPU *c)  { RETF(powf(guest_arg_f(c, 0), guest_arg_f(c, 1))); }
+static void h_rewind(CPU *c) { if (APTR(0)) rewind((FILE *)APTR(0)); RET(0); }
+static void h_isdigit(CPU *c){ uint32_t ch = A32(0); RET(ch >= '0' && ch <= '9'); }
+
+static void h_isprint(CPU *c) { uint32_t ch = A32(0); RET(ch >= 0x20 && ch < 0x7F); }
+
+/* nanosleep takes a timespec; the guest lays it out as two longs. */
+static void h_nanosleep(CPU *c)
+{
+    uint32_t req = A32(0);
+    if (req) {
+        uint32_t sec = rd32(req), nsec = rd32(req + 4);
+        DWORD ms = sec * 1000u + nsec / 1000000u;
+        Sleep(ms ? ms : 1);
+    }
+    RET(0);
+}
 static void h_memalign(CPU *c) { RET(gmalloc(A32(1), A32(0))); }
 
 static void h_calloc(CPU *c)
@@ -693,6 +824,22 @@ void hle_register_libc(void)
 
     hle_bind("malloc", h_malloc);        hle_bind("calloc", h_calloc);
     hle_bind("realloc", h_realloc);      hle_bind("free", h_free);
+
+    /* C++ allocation. Mangled, but plain C-linkage symbols as far as the PLT
+     * is concerned, so they bind by name like anything else. */
+    hle_bind("_Znwj", h_op_new);         hle_bind("_Znaj", h_op_new);
+    hle_bind("_ZdlPv", h_op_delete);     hle_bind("_ZdaPv", h_op_delete);
+    hle_bind("isprint", h_isprint);      hle_bind("nanosleep", h_nanosleep);
+    hle_bind("__assert_fail", h_assert_fail);
+    hle_bind("atanf", h_atanf);          hle_bind("powf", h_powf);
+    hle_bind("rewind", h_rewind);        hle_bind("isdigit", h_isdigit);
+    hle_bind("atan2", h_atan2);          hle_bind("atan2f", h_atan2f);
+    hle_bind("fmodf", h_fmodf);          hle_bind("qsort", h_qsort);
+    hle_bind("sqrt", h_sqrt);            hle_bind("sqrtf", h_sqrtf);
+    hle_bind("srand", h_srand);          hle_bind("clearerr", h_clearerr);
+    hle_bind("sysconf", h_sysconf);      hle_bind("sleep", h_sleep);
+    hle_bind("strcasecmp", h_strcasecmp);
+    hle_bind("strncasecmp", h_strncasecmp);
     hle_bind("memcpy", h_memcpy);        hle_bind("memmove", h_memmove);
     hle_bind("memset", h_memset);        hle_bind("memchr", h_memchr);
     hle_bind("memalign", h_memalign);
@@ -985,11 +1132,83 @@ static void h_dlopen(CPU *c)
     fprintf(stderr, "[dl] dlopen(%s)\n", A32(0) ? ASTR(0) : "(self)");
     RET(DL_HANDLE);
 }
+/* ---- symbols that live in a shared object we do not have ----
+ *
+ * Ghost Squad Evolution dlopens its audio library and dlsyms every ADX entry
+ * point out of it. Those are not PLT imports of the game binary, so there is
+ * nothing to hand back - and a game that gets a null from dlsym does not
+ * check it. It calls it, and dispatch lands on address zero.
+ *
+ * A stub address is a better answer than a null one. These tokens live above
+ * the image where nothing else can be, dispatch routes them here, and calling
+ * one does nothing and returns zero - which for an audio library means a game
+ * that runs in silence rather than one that does not run.
+ */
+#define DL_TOKEN_BASE 0xF1000000u
+#define DL_TOKEN_MAX  256
+
+static struct { const char *name; int moaned; } g_dl_tok[DL_TOKEN_MAX];
+static int g_dl_tok_n;
+
+static uint32_t dl_stub_for(const char *name)
+{
+    for (int i = 0; i < g_dl_tok_n; i++)
+        if (strcmp(g_dl_tok[i].name, name) == 0)
+            return DL_TOKEN_BASE + (uint32_t)i;      /* same name, same address */
+    if (g_dl_tok_n >= DL_TOKEN_MAX) return 0;
+    g_dl_tok[g_dl_tok_n].name = _strdup(name);
+    return DL_TOKEN_BASE + (uint32_t)(g_dl_tok_n++);
+}
+
+/* What a stubbed library function should hand back.
+ *
+ * Zero is the wrong answer for the half of an API that creates things. Ghost
+ * Squad Evolution asks its sound library for an ADXT handle, gets a null, and
+ * does not survive using it - and a null is not what the real library would
+ * ever return. A pointer to a page of zeroes is: reads see nothing set,
+ * writes go somewhere harmless, and a handle check passes.
+ *
+ * Every stub shares the one page, so two objects from a stubbed library are
+ * the same object. That is fine for a library doing nothing, and would not be
+ * for one doing something - which is the point at which the answer is to lift
+ * the library rather than to stub it. */
+/* One of these per stubbed library function, not one shared by all of them,
+ * and each big enough to be a context object rather than a page.
+ *
+ * A game that asks a stubbed library to create something writes into what it
+ * gets back. Handing every caller the same four kilobytes means two objects
+ * are one object, and a context larger than the buffer runs off the end into
+ * whatever the runtime keeps next door - which is host memory, so it ends as
+ * a fail-fast with no handler and nothing printed. */
+#define STUB_OBJECT_SIZE (256u * 1024u)
+static unsigned char *g_stub_objects[DL_TOKEN_MAX];
+
+int hle_stub_call(CPU *c, uint32_t va)
+{
+    if (va < DL_TOKEN_BASE || va >= DL_TOKEN_BASE + (uint32_t)g_dl_tok_n) return 0;
+    int i = (int)(va - DL_TOKEN_BASE);
+    if (!g_dl_tok[i].moaned) {
+        g_dl_tok[i].moaned = 1;
+        fprintf(stderr, "[dl] %s() is a stub - that library is not loaded\n",
+                g_dl_tok[i].name);
+    }
+    if (!g_stub_objects[i]) g_stub_objects[i] = (unsigned char *)calloc(1, STUB_OBJECT_SIZE);
+    RET((uint32_t)(uintptr_t)g_stub_objects[i]);
+    return 1;
+}
+
 static void h_dlsym(CPU *c)
 {
     const char *name = ASTR(1);
     uint32_t va = hle_plt_address(name);
-    if (!va) fprintf(stderr, "[dl] dlsym(%s) -> not imported by this binary\n", name);
+    if (!va) {
+        va = dl_stub_for(name);
+        static int shown;
+        if (shown < 12) {
+            shown++;
+            fprintf(stderr, "[dl] dlsym(%s) -> stub at %#010x\n", name, va);
+        }
+    }
     RET(va);
 }
 static void h_dlclose(CPU *c) { RET(0); }

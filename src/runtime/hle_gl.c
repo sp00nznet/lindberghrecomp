@@ -19,6 +19,7 @@
  */
 
 #include <stdio.h>
+#include <math.h>
 #include <string.h>
 
 #ifdef _WIN32
@@ -128,6 +129,46 @@ static GlEntry g_gl[] = {
     { "glProgramParameters4fvNV", 4 }, { "glProgramStringARB", 4 },
     { "glShaderSourceARB", 4 },        { "glUnmapBufferARB", 1 },
     { "glUseProgramObjectARB", 1 },    { "glVertexAttribPointerARB", 6 },
+
+    /* Core entry points a GLUT-era game reaches for that the GLX-era one did
+     * not: the unsuffixed multitexture and query calls, and the texture state
+     * getters it uses to save and restore around its own drawing. Appended
+     * rather than sorted in, because g_gl_handlers pairs by index. */
+    { "glActiveTexture", 1 },          { "glGenQueries", 2 },
+    { "glGetTexEnvfv", 3 },            { "glGetTexEnviv", 3 },
+    { "glGetTexParameterfv", 3 },      { "glGetTexParameteriv", 3 },
+
+    /* Fixed-function and client-array GL. Lets Go Jungle drew every
+     * vertex through a shader and an immediate-mode glBegin; this game
+     * uses the matrix stack, vertex arrays and display lists, which is
+     * what most of the platform does. */
+    { "glAttachObjectARB", 2 },        { "glBeginQuery", 2 },
+    { "glBlendEquation", 1 },          { "glClientActiveTexture", 1 },
+    { "glColor3f", 3 },                { "glColor4ubv", 1 },
+    { "glColorPointer", 4 },           { "glCompressedTexImage2D", 8 },
+    { "glCreateProgramObjectARB", 0 }, { "glDeleteRenderbuffersEXT", 2 },
+    { "glDisableClientState", 1 },     { "glDrawArrays", 3 },
+    { "glDrawElements", 4 },           { "glEndQuery", 1 },
+    { "glGetAttribLocationARB", 2 },   { "glGetError", 0 },
+    { "glGetProgramivARB", 3 },        { "glGetQueryObjectuiv", 3 },
+    { "glGetTexImage", 5 },            { "glGetTexLevelParameteriv", 4 },
+    { "glGetUniformLocationARB", 2 },  { "glIsTexture", 1 },
+    { "glLineWidth", 1 },              { "glLoadIdentity", 0 },
+    { "glLoadMatrixf", 1 },            { "glMultMatrixf", 1 },
+    { "glMaterialf", 3 },              { "glMaterialfv", 3 },
+    { "glMatrixMode", 1 },             { "glMultiTexCoord2f", 3 },
+    { "glNormalPointer", 3 },          { "glPointParameterfARB", 2 },
+    { "glPopAttrib", 0 },              { "glPopMatrix", 0 },
+    { "glProgramLocalParameter4fARB", 6 }, { "glPushAttrib", 1 },
+    { "glPushMatrix", 0 },             { "glSecondaryColorPointer", 4 },
+    { "glTexCoordPointer", 4 },        { "glTexEnvf", 3 },
+    { "glTexEnvfv", 3 },               { "glTexEnvi", 3 },
+    { "glUniform1fvARB", 3 },          { "glUniform1iARB", 2 },
+    { "glUniform1ivARB", 3 },          { "glUniformMatrix3fvARB", 4 },
+    { "glUniformMatrix4fvARB", 4 },    { "glVertexPointer", 4 },
+    { "glGenLists", 1 },               { "glNewList", 2 },
+    { "glEndList", 0 },                { "glCallList", 1 },
+    { "glDeleteLists", 2 },
 };
 
 #define GL_COUNT (sizeof g_gl / sizeof g_gl[0])
@@ -286,6 +327,65 @@ static void gl_t92(CPU *c) { gl_dispatch(c, &g_gl[92]); }
 static void gl_t93(CPU *c) { gl_dispatch(c, &g_gl[93]); }
 static void gl_t94(CPU *c) { gl_dispatch(c, &g_gl[94]); }
 static void gl_t95(CPU *c) { gl_dispatch(c, &g_gl[95]); }
+static void gl_t96(CPU *c) { gl_dispatch(c, &g_gl[96]); }
+static void gl_t97(CPU *c) { gl_dispatch(c, &g_gl[97]); }
+static void gl_t98(CPU *c) { gl_dispatch(c, &g_gl[98]); }
+static void gl_t99(CPU *c) { gl_dispatch(c, &g_gl[99]); }
+static void gl_t100(CPU *c) { gl_dispatch(c, &g_gl[100]); }
+static void gl_t101(CPU *c) { gl_dispatch(c, &g_gl[101]); }
+static void gl_t102(CPU *c) { gl_dispatch(c, &g_gl[102]); }
+static void gl_t103(CPU *c) { gl_dispatch(c, &g_gl[103]); }
+static void gl_t104(CPU *c) { gl_dispatch(c, &g_gl[104]); }
+static void gl_t105(CPU *c) { gl_dispatch(c, &g_gl[105]); }
+static void gl_t106(CPU *c) { gl_dispatch(c, &g_gl[106]); }
+static void gl_t107(CPU *c) { gl_dispatch(c, &g_gl[107]); }
+static void gl_t108(CPU *c) { gl_dispatch(c, &g_gl[108]); }
+static void gl_t109(CPU *c) { gl_dispatch(c, &g_gl[109]); }
+static void gl_t110(CPU *c) { gl_dispatch(c, &g_gl[110]); }
+static void gl_t111(CPU *c) { gl_dispatch(c, &g_gl[111]); }
+static void gl_t112(CPU *c) { gl_dispatch(c, &g_gl[112]); }
+static void gl_t113(CPU *c) { gl_dispatch(c, &g_gl[113]); }
+static void gl_t114(CPU *c) { gl_dispatch(c, &g_gl[114]); }
+static void gl_t115(CPU *c) { gl_dispatch(c, &g_gl[115]); }
+static void gl_t116(CPU *c) { gl_dispatch(c, &g_gl[116]); }
+static void gl_t117(CPU *c) { gl_dispatch(c, &g_gl[117]); }
+static void gl_t118(CPU *c) { gl_dispatch(c, &g_gl[118]); }
+static void gl_t119(CPU *c) { gl_dispatch(c, &g_gl[119]); }
+static void gl_t120(CPU *c) { gl_dispatch(c, &g_gl[120]); }
+static void gl_t121(CPU *c) { gl_dispatch(c, &g_gl[121]); }
+static void gl_t122(CPU *c) { gl_dispatch(c, &g_gl[122]); }
+static void gl_t123(CPU *c) { gl_dispatch(c, &g_gl[123]); }
+static void gl_t124(CPU *c) { gl_dispatch(c, &g_gl[124]); }
+static void gl_t125(CPU *c) { gl_dispatch(c, &g_gl[125]); }
+static void gl_t126(CPU *c) { gl_dispatch(c, &g_gl[126]); }
+static void gl_t127(CPU *c) { gl_dispatch(c, &g_gl[127]); }
+static void gl_t128(CPU *c) { gl_dispatch(c, &g_gl[128]); }
+static void gl_t129(CPU *c) { gl_dispatch(c, &g_gl[129]); }
+static void gl_t130(CPU *c) { gl_dispatch(c, &g_gl[130]); }
+static void gl_t131(CPU *c) { gl_dispatch(c, &g_gl[131]); }
+static void gl_t132(CPU *c) { gl_dispatch(c, &g_gl[132]); }
+static void gl_t133(CPU *c) { gl_dispatch(c, &g_gl[133]); }
+static void gl_t134(CPU *c) { gl_dispatch(c, &g_gl[134]); }
+static void gl_t135(CPU *c) { gl_dispatch(c, &g_gl[135]); }
+static void gl_t136(CPU *c) { gl_dispatch(c, &g_gl[136]); }
+static void gl_t137(CPU *c) { gl_dispatch(c, &g_gl[137]); }
+static void gl_t138(CPU *c) { gl_dispatch(c, &g_gl[138]); }
+static void gl_t139(CPU *c) { gl_dispatch(c, &g_gl[139]); }
+static void gl_t140(CPU *c) { gl_dispatch(c, &g_gl[140]); }
+static void gl_t141(CPU *c) { gl_dispatch(c, &g_gl[141]); }
+static void gl_t142(CPU *c) { gl_dispatch(c, &g_gl[142]); }
+static void gl_t143(CPU *c) { gl_dispatch(c, &g_gl[143]); }
+static void gl_t144(CPU *c) { gl_dispatch(c, &g_gl[144]); }
+static void gl_t145(CPU *c) { gl_dispatch(c, &g_gl[145]); }
+static void gl_t146(CPU *c) { gl_dispatch(c, &g_gl[146]); }
+static void gl_t147(CPU *c) { gl_dispatch(c, &g_gl[147]); }
+static void gl_t148(CPU *c) { gl_dispatch(c, &g_gl[148]); }
+static void gl_t149(CPU *c) { gl_dispatch(c, &g_gl[149]); }
+static void gl_t150(CPU *c) { gl_dispatch(c, &g_gl[150]); }
+static void gl_t151(CPU *c) { gl_dispatch(c, &g_gl[151]); }
+static void gl_t152(CPU *c) { gl_dispatch(c, &g_gl[152]); }
+static void gl_t153(CPU *c) { gl_dispatch(c, &g_gl[153]); }
+static void gl_t154(CPU *c) { gl_dispatch(c, &g_gl[154]); }
 
 static HleHandler g_gl_handlers[] = {
     gl_t0, gl_t1, gl_t2, gl_t3, gl_t4, gl_t5,
@@ -304,6 +404,16 @@ static HleHandler g_gl_handlers[] = {
     gl_t78, gl_t79, gl_t80, gl_t81, gl_t82, gl_t83,
     gl_t84, gl_t85, gl_t86, gl_t87, gl_t88, gl_t89,
     gl_t90, gl_t91, gl_t92, gl_t93, gl_t94, gl_t95,
+    gl_t96, gl_t97, gl_t98, gl_t99, gl_t100, gl_t101,
+    gl_t102, gl_t103, gl_t104, gl_t105, gl_t106, gl_t107,
+    gl_t108, gl_t109, gl_t110, gl_t111, gl_t112, gl_t113,
+    gl_t114, gl_t115, gl_t116, gl_t117, gl_t118, gl_t119,
+    gl_t120, gl_t121, gl_t122, gl_t123, gl_t124, gl_t125,
+    gl_t126, gl_t127, gl_t128, gl_t129, gl_t130, gl_t131,
+    gl_t132, gl_t133, gl_t134, gl_t135, gl_t136, gl_t137,
+    gl_t138, gl_t139, gl_t140, gl_t141, gl_t142, gl_t143,
+    gl_t144, gl_t145, gl_t146, gl_t147, gl_t148, gl_t149,
+    gl_t150, gl_t151, gl_t152, gl_t153, gl_t154,
 };
 
 /* glProgramStringARB, watched.
@@ -877,6 +987,48 @@ static void gl_check_fbo(CPU *c)
     }
 }
 
+/* ---- GLU ----
+ *
+ * Three functions from a different library, and all three take GLdouble, so
+ * each argument is two stack slots rather than one and the generic forwarder
+ * cannot describe them. They are also small enough to just do.
+ */
+static double a_dbl(CPU *c, int slot)
+{
+    uint64_t bits = (uint64_t)A32(slot) | ((uint64_t)A32(slot + 1) << 32);
+    double d;
+    memcpy(&d, &bits, sizeof d);
+    return d;
+}
+
+static void h_gluOrtho2D(CPU *c)
+{
+    glOrtho(a_dbl(c, 0), a_dbl(c, 2), a_dbl(c, 4), a_dbl(c, 6), -1.0, 1.0);
+    RET(0);
+}
+
+/* The textbook definition: a symmetric frustum with the near plane sized by
+ * half the vertical field of view. */
+static void h_gluPerspective(CPU *c)
+{
+    double fovy = a_dbl(c, 0), aspect = a_dbl(c, 2);
+    double zn = a_dbl(c, 4), zf = a_dbl(c, 6);
+    double top = zn * tan(fovy * 3.14159265358979323846 / 360.0);
+    double right = top * aspect;
+    glFrustum(-right, right, -top, top, zn, zf);
+    RET(0);
+}
+
+static void h_gluErrorString(CPU *c)
+{
+    static const char *msg[] = { "no error", "invalid enum", "invalid value",
+                                 "invalid operation", "stack overflow",
+                                 "stack underflow", "out of memory" };
+    uint32_t e = A32(0);
+    const char *t = (e >= 0x500 && e <= 0x505) ? msg[e - 0x500 + 1] : msg[0];
+    RET((uint32_t)(uintptr_t)t);
+}
+
 void hle_register_gl(void)
 {
     int n = 0;
@@ -896,6 +1048,10 @@ void hle_register_gl(void)
     hle_bind("glDisable", gl_disable_watch);
     hle_bind("glProgramEnvParameter4fvARB", gl_env_param_watch);
     hle_bind("glProgramParameters4fvNV", gl_env_params_watch);
+    hle_bind("gluOrtho2D", h_gluOrtho2D);
+    hle_bind("gluPerspective", h_gluPerspective);
+    hle_bind("gluErrorString", h_gluErrorString);
+
     fprintf(stderr, "[gl] %d of %u entry points bound\n", n, (unsigned)GL_COUNT);
 }
 

@@ -67,11 +67,169 @@ void lindbergh_window_size(int *w, int *h)
     if (h) *h = g_win.h ? g_win.h : env_int("LINDBERGH_HEIGHT", DEFAULT_H);
 }
 
+/* ---- input ----
+ *
+ * The window procedure is the only place host input arrives, so it is the
+ * only place that should read it. Events are queued here and drained by
+ * whoever is driving the game loop - GLUT has callbacks to hand them to, and
+ * a JVS board can be told what the player is doing from the same queue.
+ *
+ * A light gun is a mouse. The cabinet's gun reports where on the screen it is
+ * pointing and whether the trigger is down, which is exactly what a pointer
+ * and a button give, so nothing here has to model a gun specially. */
+
+#define INQ 256
+static HostInput g_inq[INQ];
+static unsigned  g_in_head, g_in_tail;
+static int       g_mouse_x, g_mouse_y, g_buttons;
+
+static void in_push(int kind, int a, int b, int cc, int d)
+{
+    unsigned next = (g_in_head + 1) % INQ;
+    if (next == g_in_tail) return;           /* full: drop the oldest news */
+    HostInput *e = &g_inq[g_in_head];
+    e->kind = kind; e->a = a; e->b = b; e->c = cc; e->d = d;
+    g_in_head = next;
+}
+
+int host_input_pop(HostInput *out)
+{
+    if (g_in_tail == g_in_head) return 0;
+    *out = g_inq[g_in_tail];
+    g_in_tail = (g_in_tail + 1) % INQ;
+    return 1;
+}
+
+void host_mouse_state(int *x, int *y, int *buttons)
+{
+    if (x) *x = g_mouse_x;
+    if (y) *y = g_mouse_y;
+    if (buttons) *buttons = g_buttons;
+}
+
+/* ---- the cabinet, as a keyboard and a mouse ----
+ *
+ * A JVS I/O board reports coins, buttons and analog axes. None of those exist
+ * on a desktop, but all of them have an obvious stand-in, and the mapping is
+ * the one every arcade front end has used for thirty years:
+ *
+ *     5 / 6     insert a coin, player one / player two
+ *     1 / 2     start
+ *     T         test, S service
+ *     mouse     where the gun is pointing
+ *     left      trigger        right   reload (offscreen shot)
+ *
+ * The coin count only ever goes up, which is what a real coin mechanism does
+ * and what the JVS read expects to see. */
+static CabinetInput g_cab;
+
+static void cabinet_key(int vk, int down)
+{
+    unsigned bit = 0;
+    switch (vk) {
+    case '5': if (down) g_cab.coins[0]++; return;
+    case '6': if (down) g_cab.coins[1]++; return;
+    case '1': bit = CAB_P1_START;   break;
+    case '2': bit = CAB_P2_START;   break;
+    case 'T': bit = CAB_TEST;       break;
+    case 'S': bit = CAB_SERVICE;    break;
+    default: return;
+    }
+    if (down) g_cab.buttons |= bit; else g_cab.buttons &= ~bit;
+}
+
+extern unsigned g_frame;   /* defined with the frame instruments below */
+
+/* LINDBERGH_AUTOSTART=1 drops a coin in and presses start, a few seconds
+ * apart, so the attract-to-game transition can be exercised without a person
+ * at the keyboard. It is how the screenshots get taken and how a change that
+ * breaks the coin path gets noticed; it is not a way to play. */
+static void cabinet_autostart(void)
+{
+    static int on = -1, coined;
+    if (on < 0) {
+        const char *v = getenv("LINDBERGH_AUTOSTART");
+        on = (v && *v && *v != '0') ? 1 : 0;
+    }
+    if (!on) return;
+
+    if (!coined && g_frame > 240) { coined = 1; g_cab.coins[0]++;
+        fprintf(stderr, "[cab] autostart: coin inserted at frame %u\n", g_frame); }
+
+    /* Press start over and over rather than once. A single press has to land
+     * inside whatever window the game happens to be listening in, and when it
+     * misses there is nothing to see - the attract mode just carries on and
+     * looks exactly like a start button that does not work. */
+    if (coined) {
+        unsigned phase = g_frame % 120u;
+        if (phase < 20u) g_cab.buttons |= CAB_P1_START;
+        else             g_cab.buttons &= ~CAB_P1_START;
+    }
+}
+
+void host_cabinet_input(CabinetInput *out)
+{
+    cabinet_autostart();
+    g_cab.gun_x = g_mouse_x;
+    g_cab.gun_y = g_mouse_y;
+    g_cab.screen_w = g_win.w ? g_win.w : 1;
+    g_cab.screen_h = g_win.h ? g_win.h : 1;
+    g_cab.buttons &= ~(CAB_P1_TRIGGER | CAB_P1_RELOAD);
+    if (g_buttons & 1) g_cab.buttons |= CAB_P1_TRIGGER;
+    if (g_buttons & 4) g_cab.buttons |= CAB_P1_RELOAD;
+    *out = g_cab;
+}
+
+static void mouse_button(int button, int down, LPARAM lp)
+{
+    g_mouse_x = (short)LOWORD(lp);
+    g_mouse_y = (short)HIWORD(lp);
+    if (down) g_buttons |= 1 << button; else g_buttons &= ~(1 << button);
+    in_push(HOST_IN_MOUSE, button, down ? 0 : 1, g_mouse_x, g_mouse_y);
+}
+
 static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
     case WM_CLOSE:
         g_win.quit = 1;
+        return 0;
+
+    /* Where the gun is pointing. */
+    case WM_MOUSEMOVE:
+        g_mouse_x = (short)LOWORD(lp);
+        g_mouse_y = (short)HIWORD(lp);
+        in_push(HOST_IN_MOTION, g_mouse_x, g_mouse_y, g_buttons, 0);
+        return 0;
+
+    /* GLUT numbers its buttons left, middle, right. */
+    case WM_LBUTTONDOWN: mouse_button(0, 1, lp); return 0;
+    case WM_LBUTTONUP:   mouse_button(0, 0, lp); return 0;
+    case WM_MBUTTONDOWN: mouse_button(1, 1, lp); return 0;
+    case WM_MBUTTONUP:   mouse_button(1, 0, lp); return 0;
+    case WM_RBUTTONDOWN: mouse_button(2, 1, lp); return 0;
+    case WM_RBUTTONUP:   mouse_button(2, 0, lp); return 0;
+
+    /* Printable keys arrive as WM_CHAR so the keyboard layout does the
+     * translating; everything else is a "special" with its own numbering. */
+    case WM_CHAR:
+        in_push(HOST_IN_KEY, (int)wp, 1, g_mouse_x, g_mouse_y);
+        return 0;
+
+    /* The cabinet's own switches, tracked whether or not the game is a GLUT
+     * one - a JVS read asks for them from anywhere. */
+    case WM_SYSKEYDOWN:
+        return 0;
+    case WM_KEYUP:
+        cabinet_key((int)wp, 0);
+        in_push(HOST_IN_KEYUP, (int)wp, 0, g_mouse_x, g_mouse_y);
+        return 0;
+    case WM_KEYDOWN:
+        cabinet_key((int)wp, 1);
+        if (wp >= VK_F1 || wp == VK_LEFT || wp == VK_RIGHT ||
+            wp == VK_UP  || wp == VK_DOWN)
+            in_push(HOST_IN_SPECIAL, (int)wp, 1, g_mouse_x, g_mouse_y);
+        if (wp == VK_ESCAPE) g_win.quit = 1;
         return 0;
     case WM_DESTROY:
         PostQuitMessage(0);
@@ -100,12 +258,25 @@ static void pump(void)
     }
 }
 
+/* What the game asked for, before the window exists. A GLUT game states its
+ * resolution in glutInitWindowSize or in a game mode string, and it then
+ * draws at that size whatever window it is given - so a 640x480 game in a
+ * 1360x768 window renders into the bottom left corner and leaves the rest
+ * black. An explicit LINDBERGH_WIDTH still wins; the hint is what the game
+ * wants, not what the person running it wants. */
+static int g_hint_w, g_hint_h;
+
+void host_window_hint(int w, int h)
+{
+    if (w > 0 && h > 0 && !g_win.hwnd) { g_hint_w = w; g_hint_h = h; }
+}
+
 static int make_window(void)
 {
     if (g_win.hwnd) return 1;
 
-    g_win.w = env_int("LINDBERGH_WIDTH", DEFAULT_W);
-    g_win.h = env_int("LINDBERGH_HEIGHT", DEFAULT_H);
+    g_win.w = env_int("LINDBERGH_WIDTH", g_hint_w ? g_hint_w : DEFAULT_W);
+    g_win.h = env_int("LINDBERGH_HEIGHT", g_hint_h ? g_hint_h : DEFAULT_H);
 
     WNDCLASSA wc;
     memset(&wc, 0, sizeof wc);
@@ -127,6 +298,84 @@ static int make_window(void)
     fprintf(stderr, "[window] %dx%d\n", g_win.w, g_win.h);
     return 1;
 }
+
+/* ---- the host window, shared ----
+ *
+ * There are two ways a Lindbergh game asks for a window, and the runtime has
+ * to answer both: raw GLX, which is what Let's Go Jungle and Virtua Tennis 3
+ * use, and GLUT, which is what most of the rest use. Neither should own the
+ * window, so the pieces both need live here and hle_glut.c borrows them
+ * rather than creating a second window nobody can see.
+ */
+
+int host_window_open(const char *title)
+{
+    if (!make_window()) return 0;
+    if (title && *title) SetWindowTextA(g_win.hwnd, title);
+    ShowWindow(g_win.hwnd, SW_SHOW);
+    return 1;
+}
+
+/* Create the GL context and make it current. The pixel format is the one a
+ * 2006 arcade title wants - RGBA, double buffered, 24-bit depth, 8-bit
+ * stencil - chosen rather than parsed out of whatever attribute list the
+ * caller had in mind. */
+int host_gl_context(void)
+{
+    if (!make_window()) return 0;
+    if (g_win.hglrc) {
+        if (GetCurrentThreadId() != g_gl_thread) {
+            wglMakeCurrent(g_win.hdc, g_win.hglrc);
+            g_gl_thread = GetCurrentThreadId();
+        }
+        return 1;
+    }
+
+    PIXELFORMATDESCRIPTOR pfd;
+    memset(&pfd, 0, sizeof pfd);
+    pfd.nSize        = sizeof pfd;
+    pfd.nVersion     = 1;
+    pfd.dwFlags      = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+    pfd.iPixelType   = PFD_TYPE_RGBA;
+    pfd.cColorBits   = 32;
+    pfd.cDepthBits   = 24;
+    pfd.cStencilBits = 8;
+
+    int fmt = ChoosePixelFormat(g_win.hdc, &pfd);
+    if (!fmt || !SetPixelFormat(g_win.hdc, fmt, &pfd)) {
+        fprintf(stderr, "[window] no usable pixel format\n");
+        return 0;
+    }
+    g_win.hglrc = wglCreateContext(g_win.hdc);
+    if (!g_win.hglrc) { fprintf(stderr, "[window] wglCreateContext failed\n"); return 0; }
+    if (!wglMakeCurrent(g_win.hdc, g_win.hglrc)) {
+        fprintf(stderr, "[window] wglMakeCurrent failed\n");
+        return 0;
+    }
+    g_gl_thread = GetCurrentThreadId();
+    fprintf(stderr, "[window] GL context ready (pixel format %d), %s\n",
+            fmt, (const char *)glGetString(GL_RENDERER));
+    return 1;
+}
+
+void host_pump(void) { pump(); }
+
+/* GLUT swaps through here rather than through glXSwapBuffers, so the frame
+ * instruments have to hang off both or a GLUT game can never be measured.
+ * The GLX path calls inspect_frame itself and swaps directly, so nothing is
+ * counted twice. */
+static void inspect_frame(void);
+extern unsigned g_frame;
+
+void host_swap(void)
+{
+    inspect_frame();
+    g_frame++;
+    if (g_win.hdc) SwapBuffers(g_win.hdc);
+    pump();
+}
+
+HWND host_hwnd(void) { return g_win.hwnd; }
 
 /* ---- GLX ----
  *
