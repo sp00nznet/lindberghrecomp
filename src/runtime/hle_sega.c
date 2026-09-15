@@ -527,8 +527,13 @@ void hle_register_sega(void)
     n += guest_override("amBackupWrapper_KeyEepromRead", h_eeprom_read);
     n += guest_override("amBackupWrapper_KeyEepromWrite", h_eeprom_write);
 
-    n += guest_override("amJvsSendRequest", h_jvs_send);
-    n += guest_override("amJvsRecvAcknowledge", h_jvs_recv);
+    /* LINDBERGH_NO_JVS=1 leaves the board unanswered, so the game finds no
+     * I/O and says so. A test for whether a fault lives in this transport or
+     * merely happens to be near it. */
+    if (!getenv("LINDBERGH_NO_JVS")) {
+        n += guest_override("amJvsSendRequest", h_jvs_send);
+        n += guest_override("amJvsRecvAcknowledge", h_jvs_recv);
+    }
 
     {   /* Only worth installing if the two globals can be found; without
          * them this would swallow every error instead of one. */

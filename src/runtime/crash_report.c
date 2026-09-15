@@ -225,6 +225,19 @@ static void on_exit_note(void)
     fflush(stderr);
 }
 
+/* Per thread, because the CRT looks there first.
+ *
+ * _set_invalid_parameter_handler is process wide, but the UCRT consults a
+ * thread-local handler before it, and a thread that never sets one gets the
+ * default - which calls __fastfail. A game with a render thread and an audio
+ * thread therefore dies silently on two of its three threads no matter what
+ * the main thread installed. */
+void guest_install_thread_handlers(void)
+{
+    _set_thread_local_invalid_parameter_handler(on_invalid_parameter);
+    signal(SIGABRT, on_abort_signal);
+}
+
 void guest_install_crash_handler(void)
 {
     /* Unbuffered, before anything else can be lost.
@@ -240,6 +253,7 @@ void guest_install_crash_handler(void)
      * notice that Ghost Squad was leaving rather than falling over. */
     atexit(on_exit_note);
     _set_invalid_parameter_handler(on_invalid_parameter);
+    guest_install_thread_handlers();
 
     /* Stop abort() from becoming a fail-fast.
      *

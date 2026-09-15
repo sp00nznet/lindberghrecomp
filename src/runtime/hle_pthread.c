@@ -224,6 +224,7 @@ static DWORD WINAPI thread_trampoline(LPVOID p)
 
     memset(&cpu, 0, sizeof cpu);
     guest_set_current_cpu(&cpu);
+    guest_install_thread_handlers();   /* the CRT checks per thread first */
 
     /* Stack grows down, so start at the top. Leave a little headroom and keep
      * esp 16-byte aligned, which the SSE the game is full of requires. */

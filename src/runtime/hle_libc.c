@@ -92,7 +92,19 @@ static void *gmalloc(size_t n, size_t align)
     if (n >= GUEST_MMAP_THRESHOLD && align < GUEST_PAGE) align = GUEST_PAGE;
     size_t hdr = sizeof(AllocHdr);
 
-    void *base = malloc(n + align + hdr);
+    /* LINDBERGH_HEAP_SLACK=N leaves N spare bytes past every allocation.
+     *
+     * A guest that writes past the end of its own block lands in the host
+     * heap's own bookkeeping, and the CRT answers that by calling __fastfail -
+     * no handler, no message, exit code 0xC0000409. Slack does not fix an
+     * overrun, it moves the damage somewhere harmless so the overrun can be
+     * seen rather than being the last thing that ever happens. */
+    static size_t slack = (size_t)-1;
+    if (slack == (size_t)-1) {
+        const char *v = getenv("LINDBERGH_HEAP_SLACK");
+        slack = (v && *v) ? (size_t)strtoul(v, NULL, 0) : 0;
+    }
+    void *base = malloc(n + align + hdr + slack);
     if (!base) {
         /* The guest has no way to report this and will dereference the null it
          * gets back, several frames later, as a fault with nothing to say what

@@ -180,6 +180,7 @@ typedef struct {
     int screen_w, screen_h;
 } CabinetInput;
 
+void       guest_install_thread_handlers(void);
 void       host_cabinet_input(CabinetInput *out);
 int        host_input_pop(HostInput *out);
 void       host_mouse_state(int *x, int *y, int *buttons);
