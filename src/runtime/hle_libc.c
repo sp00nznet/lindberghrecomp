@@ -136,7 +136,29 @@ static void *grealloc(void *p, size_t n)
     return q;
 }
 
-static void h_malloc  (CPU *c) { RET(gmalloc(A32(0), GUEST_ALIGN)); }
+/* LINDBERGH_ALLOC=1 reports every allocation and what came back.
+ *
+ * A game that builds its own heap manager on top of malloc asks for a handful
+ * of large blocks at start up and then never calls it again. If one of those
+ * comes back null the game does not say so - it carries the null into its own
+ * allocator and faults somewhere else entirely, with a backtrace that points
+ * at the heap code rather than at the request that failed. */
+static void alloc_log(const char *who, uint32_t n, uint32_t got)
+{
+    static int shown;
+    if (shown >= 40 || !getenv("LINDBERGH_ALLOC")) return;
+    shown++;
+    fprintf(stderr, "[alloc] %-9s %8u bytes -> 0x%08X%s\n",
+            who, n, got, got ? "" : "   *** NULL ***");
+    fflush(stderr);
+}
+
+static void h_malloc(CPU *c)
+{
+    uint32_t n = A32(0), got = (uint32_t)(uintptr_t)gmalloc(n, GUEST_ALIGN);
+    alloc_log("malloc", n, got);
+    RET(got);
+}
 static void h_realloc (CPU *c) { RET(grealloc(APTR(0), A32(1))); }
 static void h_free    (CPU *c) { gfree(APTR(0)); }
 static void h_memalign(CPU *c) { RET(gmalloc(A32(1), A32(0))); }
