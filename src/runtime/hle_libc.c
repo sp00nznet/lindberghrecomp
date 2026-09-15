@@ -71,9 +71,25 @@ typedef struct {
     uint32_t magic;
 } AllocHdr;
 
+/* glibc hands any request at or above its mmap threshold - 128 KiB by default
+ * - straight to mmap, so a large block always comes back page aligned. Guest
+ * code never asks for that and never checks it, which is exactly why it can
+ * depend on it without anyone noticing.
+ *
+ * Ghost Squad Evolution builds its own allocator on top of malloc and rounds
+ * the first free block up to a 32-byte boundary. Given a page-aligned heap the
+ * rounding is a no-op. Given a merely 16-aligned one it shifts the block by
+ * 16 bytes, and the split-off block then overlaps the header of the block it
+ * was split from - so the allocator reads a "next" pointer out of memory it
+ * has just zeroed, and writes through the null it finds. The fault lands two
+ * functions away from the cause, with nothing pointing back at malloc. */
+#define GUEST_MMAP_THRESHOLD (128u * 1024u)
+#define GUEST_PAGE           4096u
+
 static void *gmalloc(size_t n, size_t align)
 {
     if (align < GUEST_ALIGN) align = GUEST_ALIGN;
+    if (n >= GUEST_MMAP_THRESHOLD && align < GUEST_PAGE) align = GUEST_PAGE;
     size_t hdr = sizeof(AllocHdr);
 
     void *base = malloc(n + align + hdr);
