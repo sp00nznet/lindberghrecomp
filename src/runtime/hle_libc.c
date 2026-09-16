@@ -902,7 +902,6 @@ void hle_register_libc(void)
     hle_bind("__deregister_frame_info_bases", h_deregister_frame_info_bases);
     hle_bind("__libc_freeres", h_libc_freeres);
     hle_bind("setlocale", h_setlocale);
-    hle_bind("getcwd", h_getcwd);
     hle_bind("realpath", h_realpath);
     hle_bind("__divdi3", h_divdi3);
     hle_bind("__udivdi3", h_udivdi3);
@@ -1320,3 +1319,151 @@ static void h_fscanf(CPU *c)
 {
     RET(guest_scan((FILE *)APTR(0), ASTR(1), c, c->esp + 8u));
 }
+
+/* ---- reading a directory ----
+ *
+ * OutRun 2 SP SDX scans for its saved ghost car data at start up, and a null
+ * from opendir is not something it recovers from quietly.
+ *
+ * The guest's struct dirent is glibc's 32-bit one, and the game reads d_name
+ * out of it, so the offsets have to be right:
+ *
+ *      +0   d_ino      +4  d_off     +8  d_reclen
+ *      +10  d_type     +11 d_name, 256 bytes
+ */
+#define DIRENT_NAME 11
+#define DIRENT_SIZE (DIRENT_NAME + 256)
+
+typedef struct {
+    intptr_t     find;
+    int          first;
+    struct _finddata_t data;
+    unsigned char ent[DIRENT_SIZE];
+} GuestDir;
+
+static void h_opendir(CPU *c)
+{
+    const char *path = A32(0) ? ASTR(0) : NULL;
+    if (!path) { RET(0); return; }
+
+    char pattern[1024];
+    snprintf(pattern, sizeof pattern, "%s\*", path);
+
+    GuestDir *d = (GuestDir *)calloc(1, sizeof *d);
+    if (!d) { RET(0); return; }
+    d->find = _findfirst(pattern, &d->data);
+    if (d->find == -1) { free(d); RET(0); return; }
+    d->first = 1;
+    RET(d);
+}
+
+static void h_readdir(CPU *c)
+{
+    GuestDir *d = (GuestDir *)APTR(0);
+    if (!d) { RET(0); return; }
+    if (d->first) d->first = 0;
+    else if (_findnext(d->find, &d->data) != 0) { RET(0); return; }
+
+    memset(d->ent, 0, sizeof d->ent);
+    d->ent[8] = (unsigned char)DIRENT_SIZE;          /* d_reclen */
+    d->ent[10] = (d->data.attrib & _A_SUBDIR) ? 4 : 8;   /* DT_DIR : DT_REG */
+    snprintf((char *)d->ent + DIRENT_NAME, 256, "%s", d->data.name);
+    RET(d->ent);
+}
+
+static void h_closedir(CPU *c)
+{
+    GuestDir *d = (GuestDir *)APTR(0);
+    if (d) { if (d->find != -1) _findclose(d->find); free(d); }
+    RET(0);
+}
+
+/* The game changes into its own data directory and then opens files by
+ * relative path, so this has to actually happen rather than be waved through. */
+static void h_chdir(CPU *c)
+{
+    const char *path = A32(0) ? ASTR(0) : NULL;
+    int rc = path ? _chdir(path) : -1;
+    fprintf(stderr, "[io] chdir(%s) -> %d\n", path ? path : "(null)", rc);
+    RET((uint32_t)rc);
+}
+
+static void h_perror(CPU *c)
+{
+    fprintf(stderr, "[guest] %s\n", A32(0) ? ASTR(0) : "error");
+    RET(0);
+}
+
+void hle_register_dir(void)
+{
+    hle_bind("opendir", h_opendir);
+    hle_bind("readdir", h_readdir);
+    hle_bind("closedir", h_closedir);
+    hle_bind("perror", h_perror);
+    hle_bind("chdir", h_chdir);
+    hle_bind("getcwd", h_getcwd);
+}
+
+/* ---- sscanf ----
+ *
+ * OutRun 2 SP SDX parses its shader descriptions with this, so it has to work
+ * rather than merely return.
+ *
+ * Rather than write another format parser, each directive is handed to the
+ * host's own sscanf one at a time with a %n on the end, which says how much
+ * of the input it consumed so the next directive starts in the right place.
+ * The host parser is then the one deciding what a %f accepts, which is the
+ * part that is easy to get subtly wrong by hand.
+ */
+static int guest_sscanf(const char *in, const char *fmt, CPU *c, uint32_t argbase)
+{
+    int filled = 0;
+    uint32_t arg = argbase;
+    size_t pos = 0;
+
+    for (const char *f = fmt; *f; ) {
+        if (*f != '%') { f++; continue; }
+        if (f[1] == '%') { f += 2; continue; }
+
+        /* Copy this one directive out, flags and width and all. */
+        const char *start = f++;
+        while (*f && !strchr("diouxXeEfgGaAcspn", *f)) f++;
+        if (!*f) break;
+        char conv = *f++;
+
+        char one[64];
+        size_t len = (size_t)(f - start);
+        if (len > sizeof one - 4) break;
+        memcpy(one, start, len);
+        strcpy(one + len, "%n");
+
+        int consumed = -1;
+        uint32_t target = rd32(arg);
+        if (!target) break;          /* a null destination is not ours to write */
+        int got;
+        if (conv == 'c' || conv == 's' || conv == '[')
+            got = sscanf(in + pos, one, (char *)(uintptr_t)target, &consumed);
+        else if (conv == 'e' || conv == 'E' || conv == 'f' ||
+                 conv == 'g' || conv == 'G' || conv == 'a' || conv == 'A')
+            got = sscanf(in + pos, one, (float *)(uintptr_t)target, &consumed);
+        else
+            got = sscanf(in + pos, one, (int *)(uintptr_t)target, &consumed);
+
+        if (got != 1 || consumed < 0) break;
+        pos += (size_t)consumed;
+        arg += 4;
+        filled++;
+    }
+    return filled;
+}
+
+static void h_sscanf(CPU *c)
+{
+    const char *in  = A32(0) ? ASTR(0) : "";
+    const char *fmt = A32(1) ? ASTR(1) : "";
+    /* A32(0) is at esp+0, so the variable arguments begin at esp+8 - two
+     * slots along, not three. */
+    RET((uint32_t)guest_sscanf(in, fmt, c, c->esp + 8u));
+}
+
+void hle_register_scan(void) { hle_bind("sscanf", h_sscanf); }

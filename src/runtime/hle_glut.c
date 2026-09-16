@@ -211,6 +211,20 @@ static void h_glutExtensionSupported(CPU *c)
 
 /* ---- the loop ---- */
 
+/* freeglut's single iteration. A game that calls this drives its own loop and
+ * only wants the toolkit to pump and deliver, which is the same body as
+ * glutMainLoop without the part that never returns. */
+static void h_glutMainLoopEvent(CPU *c)
+{
+    host_pump();
+    deliver_input(c);
+    if (g_redisplay && g_cb.display) {
+        g_redisplay = 0;
+        guest_call(c, g_cb.display, NULL, 0);
+    }
+    RET(0);
+}
+
 static void h_glutMainLoop(CPU *c)
 {
     int w, h;
@@ -277,6 +291,7 @@ void hle_register_glut(void)
     n += hle_bind("glutGet", h_glutGet);
     n += hle_bind("glutExtensionSupported", h_glutExtensionSupported);
     n += hle_bind("glutMainLoop", h_glutMainLoop);
+    n += hle_bind("glutMainLoopEvent", h_glutMainLoopEvent);
 
     /* The teapot and friends. A game links them because GLUT defines them,
      * not because it draws them; answering is cheaper than aborting. */

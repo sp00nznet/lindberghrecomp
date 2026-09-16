@@ -359,6 +359,24 @@ static void nv_log(const char *who, CPU *c)
                 who, A32(0), A32(1), A32(2));
 }
 
+/* The EEPROM, reached directly rather than through the backup record layer.
+ *
+ * OutRun 2 SP SDX saves its assignment data by calling amEepromRead and
+ * amEepromWrite itself. Their argument orders differ from each other the same
+ * way the SRAM wrappers do - read takes the address first, write takes the
+ * buffer first - and the address is a sixteen bit word in both. */
+static void h_eeprom_read_api(CPU *c)
+{
+    nv_log("eepromRead", c);
+    RET(nvram_copy(g_eeprom, EEPROM_SIZE, A32(1), A32(0) & 0xFFFFu, A32(2), 0));
+}
+
+static void h_eeprom_write_api(CPU *c)
+{
+    nv_log("eepromWrite", c);
+    RET(nvram_copy(g_eeprom, EEPROM_SIZE, A32(0), A32(1) & 0xFFFFu, A32(2), 1));
+}
+
 static void h_sram_read(CPU *c)
 { nv_log("sramRead", c);  RET(nvram_copy(g_sram, SRAM_SIZE, A32(1), A32(0), A32(2), 0)); }
 static void h_sram_write(CPU *c)
@@ -526,6 +544,8 @@ void hle_register_sega(void)
     n += guest_override("amBackupWrapper_BbBuSramWrite", h_sram_write);
     n += guest_override("amBackupWrapper_KeyEepromRead", h_eeprom_read);
     n += guest_override("amBackupWrapper_KeyEepromWrite", h_eeprom_write);
+    n += guest_override("amEepromRead", h_eeprom_read_api);
+    n += guest_override("amEepromWrite", h_eeprom_write_api);
 
     /* LINDBERGH_NO_JVS=1 leaves the board unanswered, so the game finds no
      * I/O and says so. A test for whether a fault lives in this transport or

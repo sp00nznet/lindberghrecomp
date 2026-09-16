@@ -155,6 +155,8 @@ void       hle_register_console(void);
 void       hle_register_sega(void);
 void       hle_register_glut(void);
 void       hle_register_cxx(void);
+void       hle_register_dir(void);
+void       hle_register_scan(void);
 
 /* ---- host input ----
  *

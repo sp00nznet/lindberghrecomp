@@ -169,6 +169,37 @@ static GlEntry g_gl[] = {
     { "glGenLists", 1 },               { "glNewList", 2 },
     { "glEndList", 0 },                { "glCallList", 1 },
     { "glDeleteLists", 2 },
+
+    /* Fences, occlusion queries and NV_vertex_program: the older NVIDIA
+     * extensions that a 2006 title targeting this exact GPU used directly. */
+    { "glBeginOcclusionQueryNV", 1 }, { "glBindBuffer", 2 },
+    { "glBindProgramNV", 2 }, { "glBlendColor", 4 },
+    { "glBlendFuncSeparate", 4 }, { "glBufferData", 4 },
+    { "glClampColorARB", 2 }, { "glClientActiveTextureARB", 1 },
+    { "glColor3ub", 3 }, { "glColorMaterial", 2 },
+    { "glDeleteBuffers", 2 }, { "glDeleteFencesNV", 2 },
+    { "glDeleteProgramsNV", 2 }, { "glEndOcclusionQueryNV", 0 },
+    { "glFinish", 0 }, { "glFinishFenceNV", 1 },
+    { "glFlush", 0 }, { "glGenBuffers", 2 },
+    { "glGenFencesNV", 2 }, { "glGenOcclusionQueriesNV", 2 },
+    { "glGenProgramsNV", 2 }, { "glGetBufferParameterivARB", 3 },
+    { "glGetMaterialfv", 3 }, { "glGetOcclusionQueryuivNV", 3 },
+    { "glIsBufferARB", 1 }, { "glIsFenceNV", 1 },
+    { "glIsProgramNV", 1 }, { "glLightfv", 3 },
+    { "glLoadProgramNV", 4 }, { "glLoadTransposeMatrixf", 1 },
+    { "glMapBuffer", 2 }, { "glMultTransposeMatrixf", 1 },
+    { "glMultiTexCoord2fv", 2 }, { "glNormal3f", 3 },
+    { "glPointParameterf", 2 }, { "glPointParameterfv", 2 },
+    { "glPointSize", 1 }, { "glProgramEnvParameter4fARB", 6 },
+    { "glProgramParameter4fNV", 6 }, { "glProgramParameter4fvNV", 3 },
+    { "glRasterPos2f", 2 }, { "glRasterPos3f", 3 },
+    { "glReadBuffer", 1 }, { "glRecti", 4 },
+    { "glRotatef", 4 }, { "glScalef", 3 },
+    { "glSecondaryColor3ub", 3 }, { "glSetFenceNV", 2 },
+    { "glShadeModel", 1 }, { "glTexCoord2fv", 1 },
+    { "glTexCoord4f", 4 }, { "glTrackMatrixNV", 4 },
+    { "glTranslatef", 3 }, { "glUnmapBuffer", 1 },
+    { "glVertex4f", 4 }, { "glVertexAttrib1f", 2 },
 };
 
 #define GL_COUNT (sizeof g_gl / sizeof g_gl[0])
@@ -386,6 +417,62 @@ static void gl_t151(CPU *c) { gl_dispatch(c, &g_gl[151]); }
 static void gl_t152(CPU *c) { gl_dispatch(c, &g_gl[152]); }
 static void gl_t153(CPU *c) { gl_dispatch(c, &g_gl[153]); }
 static void gl_t154(CPU *c) { gl_dispatch(c, &g_gl[154]); }
+static void gl_t155(CPU *c) { gl_dispatch(c, &g_gl[155]); }
+static void gl_t156(CPU *c) { gl_dispatch(c, &g_gl[156]); }
+static void gl_t157(CPU *c) { gl_dispatch(c, &g_gl[157]); }
+static void gl_t158(CPU *c) { gl_dispatch(c, &g_gl[158]); }
+static void gl_t159(CPU *c) { gl_dispatch(c, &g_gl[159]); }
+static void gl_t160(CPU *c) { gl_dispatch(c, &g_gl[160]); }
+static void gl_t161(CPU *c) { gl_dispatch(c, &g_gl[161]); }
+static void gl_t162(CPU *c) { gl_dispatch(c, &g_gl[162]); }
+static void gl_t163(CPU *c) { gl_dispatch(c, &g_gl[163]); }
+static void gl_t164(CPU *c) { gl_dispatch(c, &g_gl[164]); }
+static void gl_t165(CPU *c) { gl_dispatch(c, &g_gl[165]); }
+static void gl_t166(CPU *c) { gl_dispatch(c, &g_gl[166]); }
+static void gl_t167(CPU *c) { gl_dispatch(c, &g_gl[167]); }
+static void gl_t168(CPU *c) { gl_dispatch(c, &g_gl[168]); }
+static void gl_t169(CPU *c) { gl_dispatch(c, &g_gl[169]); }
+static void gl_t170(CPU *c) { gl_dispatch(c, &g_gl[170]); }
+static void gl_t171(CPU *c) { gl_dispatch(c, &g_gl[171]); }
+static void gl_t172(CPU *c) { gl_dispatch(c, &g_gl[172]); }
+static void gl_t173(CPU *c) { gl_dispatch(c, &g_gl[173]); }
+static void gl_t174(CPU *c) { gl_dispatch(c, &g_gl[174]); }
+static void gl_t175(CPU *c) { gl_dispatch(c, &g_gl[175]); }
+static void gl_t176(CPU *c) { gl_dispatch(c, &g_gl[176]); }
+static void gl_t177(CPU *c) { gl_dispatch(c, &g_gl[177]); }
+static void gl_t178(CPU *c) { gl_dispatch(c, &g_gl[178]); }
+static void gl_t179(CPU *c) { gl_dispatch(c, &g_gl[179]); }
+static void gl_t180(CPU *c) { gl_dispatch(c, &g_gl[180]); }
+static void gl_t181(CPU *c) { gl_dispatch(c, &g_gl[181]); }
+static void gl_t182(CPU *c) { gl_dispatch(c, &g_gl[182]); }
+static void gl_t183(CPU *c) { gl_dispatch(c, &g_gl[183]); }
+static void gl_t184(CPU *c) { gl_dispatch(c, &g_gl[184]); }
+static void gl_t185(CPU *c) { gl_dispatch(c, &g_gl[185]); }
+static void gl_t186(CPU *c) { gl_dispatch(c, &g_gl[186]); }
+static void gl_t187(CPU *c) { gl_dispatch(c, &g_gl[187]); }
+static void gl_t188(CPU *c) { gl_dispatch(c, &g_gl[188]); }
+static void gl_t189(CPU *c) { gl_dispatch(c, &g_gl[189]); }
+static void gl_t190(CPU *c) { gl_dispatch(c, &g_gl[190]); }
+static void gl_t191(CPU *c) { gl_dispatch(c, &g_gl[191]); }
+static void gl_t192(CPU *c) { gl_dispatch(c, &g_gl[192]); }
+static void gl_t193(CPU *c) { gl_dispatch(c, &g_gl[193]); }
+static void gl_t194(CPU *c) { gl_dispatch(c, &g_gl[194]); }
+static void gl_t195(CPU *c) { gl_dispatch(c, &g_gl[195]); }
+static void gl_t196(CPU *c) { gl_dispatch(c, &g_gl[196]); }
+static void gl_t197(CPU *c) { gl_dispatch(c, &g_gl[197]); }
+static void gl_t198(CPU *c) { gl_dispatch(c, &g_gl[198]); }
+static void gl_t199(CPU *c) { gl_dispatch(c, &g_gl[199]); }
+static void gl_t200(CPU *c) { gl_dispatch(c, &g_gl[200]); }
+static void gl_t201(CPU *c) { gl_dispatch(c, &g_gl[201]); }
+static void gl_t202(CPU *c) { gl_dispatch(c, &g_gl[202]); }
+static void gl_t203(CPU *c) { gl_dispatch(c, &g_gl[203]); }
+static void gl_t204(CPU *c) { gl_dispatch(c, &g_gl[204]); }
+static void gl_t205(CPU *c) { gl_dispatch(c, &g_gl[205]); }
+static void gl_t206(CPU *c) { gl_dispatch(c, &g_gl[206]); }
+static void gl_t207(CPU *c) { gl_dispatch(c, &g_gl[207]); }
+static void gl_t208(CPU *c) { gl_dispatch(c, &g_gl[208]); }
+static void gl_t209(CPU *c) { gl_dispatch(c, &g_gl[209]); }
+static void gl_t210(CPU *c) { gl_dispatch(c, &g_gl[210]); }
 
 static HleHandler g_gl_handlers[] = {
     gl_t0, gl_t1, gl_t2, gl_t3, gl_t4, gl_t5,
@@ -414,6 +501,16 @@ static HleHandler g_gl_handlers[] = {
     gl_t138, gl_t139, gl_t140, gl_t141, gl_t142, gl_t143,
     gl_t144, gl_t145, gl_t146, gl_t147, gl_t148, gl_t149,
     gl_t150, gl_t151, gl_t152, gl_t153, gl_t154,
+    gl_t155, gl_t156, gl_t157, gl_t158, gl_t159, gl_t160,
+    gl_t161, gl_t162, gl_t163, gl_t164, gl_t165, gl_t166,
+    gl_t167, gl_t168, gl_t169, gl_t170, gl_t171, gl_t172,
+    gl_t173, gl_t174, gl_t175, gl_t176, gl_t177, gl_t178,
+    gl_t179, gl_t180, gl_t181, gl_t182, gl_t183, gl_t184,
+    gl_t185, gl_t186, gl_t187, gl_t188, gl_t189, gl_t190,
+    gl_t191, gl_t192, gl_t193, gl_t194, gl_t195, gl_t196,
+    gl_t197, gl_t198, gl_t199, gl_t200, gl_t201, gl_t202,
+    gl_t203, gl_t204, gl_t205, gl_t206, gl_t207, gl_t208,
+    gl_t209, gl_t210,
 };
 
 /* glProgramStringARB, watched.
@@ -1001,6 +1098,50 @@ static double a_dbl(CPU *c, int slot)
     return d;
 }
 
+/* Six GLdoubles, so twelve stack slots. The projection matrix calls are the
+ * one part of fixed-function GL that still uses double precision. */
+static void h_glOrtho(CPU *c)
+{
+    glOrtho(a_dbl(c, 0), a_dbl(c, 2), a_dbl(c, 4),
+            a_dbl(c, 6), a_dbl(c, 8), a_dbl(c, 10));
+    RET(0);
+}
+
+static void h_glFrustum(CPU *c)
+{
+    glFrustum(a_dbl(c, 0), a_dbl(c, 2), a_dbl(c, 4),
+              a_dbl(c, 6), a_dbl(c, 8), a_dbl(c, 10));
+    RET(0);
+}
+
+/* gluLookAt is nine doubles and no GL call of its own: it builds a basis from
+ * the eye, the centre and the up vector, and multiplies it in. */
+static void h_gluLookAt(CPU *c)
+{
+    double ex = a_dbl(c,0),  ey = a_dbl(c,2),  ez = a_dbl(c,4);
+    double cx = a_dbl(c,6),  cy = a_dbl(c,8),  cz = a_dbl(c,10);
+    double ux = a_dbl(c,12), uy = a_dbl(c,14), uz = a_dbl(c,16);
+
+    double fx = cx - ex, fy = cy - ey, fz = cz - ez;
+    double fl = sqrt(fx*fx + fy*fy + fz*fz);
+    if (fl > 0.0) { fx /= fl; fy /= fl; fz /= fl; }
+
+    double sx = fy*uz - fz*uy, sy = fz*ux - fx*uz, sz = fx*uy - fy*ux;
+    double sl = sqrt(sx*sx + sy*sy + sz*sz);
+    if (sl > 0.0) { sx /= sl; sy /= sl; sz /= sl; }
+
+    double tx = sy*fz - sz*fy, ty = sz*fx - sx*fz, tz = sx*fy - sy*fx;
+
+    float m[16];
+    m[0]=(float)sx; m[4]=(float)sy; m[8] =(float)sz;  m[12]=0.0f;
+    m[1]=(float)tx; m[5]=(float)ty; m[9] =(float)tz;  m[13]=0.0f;
+    m[2]=(float)-fx;m[6]=(float)-fy;m[10]=(float)-fz; m[14]=0.0f;
+    m[3]=0.0f;      m[7]=0.0f;      m[11]=0.0f;       m[15]=1.0f;
+    glMultMatrixf(m);
+    glTranslatef((float)-ex, (float)-ey, (float)-ez);
+    RET(0);
+}
+
 static void h_gluOrtho2D(CPU *c)
 {
     glOrtho(a_dbl(c, 0), a_dbl(c, 2), a_dbl(c, 4), a_dbl(c, 6), -1.0, 1.0);
@@ -1048,6 +1189,9 @@ void hle_register_gl(void)
     hle_bind("glDisable", gl_disable_watch);
     hle_bind("glProgramEnvParameter4fvARB", gl_env_param_watch);
     hle_bind("glProgramParameters4fvNV", gl_env_params_watch);
+    hle_bind("glOrtho", h_glOrtho);
+    hle_bind("glFrustum", h_glFrustum);
+    hle_bind("gluLookAt", h_gluLookAt);
     hle_bind("gluOrtho2D", h_gluOrtho2D);
     hle_bind("gluPerspective", h_gluPerspective);
     hle_bind("gluErrorString", h_gluErrorString);
