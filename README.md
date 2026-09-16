@@ -120,6 +120,7 @@ The detail moved to `docs/`, so this page stays a map rather than a diary.
 
 | | |
 |---|---|
+| [docs/compatibility.md](docs/compatibility.md) | which games run, how far, and what each one needs |
 | [docs/lifting.md](docs/lifting.md) | coverage across five binaries, what an unstripped ELF gives you, and how the SSE gap was closed |
 | [docs/the-black-frame.md](docs/the-black-frame.md) | one mis-lifted x87 instruction, and the five wrong answers before it |
 | [docs/instruments.md](docs/instruments.md) | the `LINDBERGH_*` switches, and why each one exists |
