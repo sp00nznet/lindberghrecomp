@@ -93,8 +93,7 @@ The subclass is 30 lines. Everything else the lifter already did.
 
 ## Status
 
-A Lindbergh game boots from its own ELF, answers the cabinet's base board, and
-renders its attract mode.
+Five Lindbergh games lift and build. Two render, one takes a coin.
 
 ![Two giant spiders mid-leap on a jungle path, both players' rifles and
 crosshairs on screen, combo counters running](docs/attract.png)
@@ -106,13 +105,21 @@ board. The frame is `glReadPixels` on the back buffer before the swap.
 | | |
 |---|---|
 | Disc carving | **Works.** Four dumps, both filesystems found in each, payload byte-exact. |
-| ELF32 parsing | **Works.** 31,759 functions, 406 PLT imports, 13 `DT_NEEDED`. |
-| Lifting | **Works.** All 31,759 in 28 s, 1.7 M lines across 80 translation units. |
-| Instruction coverage | **99.96%** on the game — 622 `RECOMP_TODO` lines, all MMX or port I/O, none on a path reached. **100%** on four unrelated binaries, see below. |
-| Runtime | Image mapping, kernel, threads, window, GL, Cg, SEGA base board, JVS, NVRAM. |
-| Boots and runs | **Yes** — CRT, constructors, `main`, 3 threads. |
-| Presents a picture | **Yes.** Attract mode at 1360×768. |
-| Input, sound | **No.** |
+| ELF32 parsing | **Works.** Up to 31,749 functions and 406 PLT imports in one binary. |
+| Lifting | **Works.** 2.5 M instructions across five games, ~15 s each. |
+| Instruction coverage | **99.86–99.98%** per game. What is left is port I/O, data that disassembles as code, and one MMX audio decoder every title links statically. **100%** on four unrelated binaries off the same discs. |
+| Windowing | **Both.** Raw GLX for the two Cg titles, GLUT for the other three — which inverts control, so `glutMainLoop` becomes the loop. |
+| Input | **Works.** One queue, read twice: GLUT callbacks, and a JVS board reporting switches, coins and analog. A coin registers and start is accepted. |
+| Runtime | Image mapping, kernel, threads, window, GL, Cg, libstdc++, SEGA base board, JVS, EEPROM and battery-backed store. |
+| Sound | **No.** |
+
+Which game is at which stage — and what each one still wants — is in
+[docs/compatibility.md](docs/compatibility.md). None is playable yet, and that
+table says so in the column rather than in a footnote.
+
+The platform turns out to divide by how a game opens a window rather than by
+year or genre: three of the five drive GLUT, and the two that do not are the
+two that use Cg.
 
 ### Further reading
 
