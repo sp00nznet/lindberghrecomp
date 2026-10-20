@@ -30,6 +30,8 @@ commits and were never tagged.
 - Large allocations are page aligned, as glibc's are.
 - An ELF function symbol inside the PLT is treated as a stub.
 - `.gitignore` covers extension-less Lindbergh game binaries (`*_final`).
+- A fresh clone builds the runtime self-check: two of its stand-in headers were
+  ignored by duplicate `.gitignore` lines and had never been committed.
 
 ## [0.5.1] - 2026-09-14
 ### Fixed

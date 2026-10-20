@@ -29,9 +29,6 @@ recomp_symbols.h
 !tests/selftest/recomp_imports.h
 !tests/selftest/recomp_plt.h
 !tests/selftest/recomp_symbols.h
-recomp_symbols.h
-recomp_plt.h
-recomp_symbols.h
 
 # Game media. Bring your own; none of it belongs here.
 *.iso
