@@ -39,7 +39,8 @@ one place that serves every target, leave a test behind.
 Reproduce any of these numbers with:
 
 ```powershell
-py -3.11 -m tools recomp <game.elf> genfindstr /C:"TODO" genecomp_funcs.c | find /c /v ""
+py -3.11 -m tools recomp <game.elf> gen\
+findstr /C:"TODO" gen\recomp_funcs.c | find /c /v ""
 ```
 
 ## Ground rules
@@ -60,6 +61,17 @@ once; fixing it here forks the lifter and helps one.
 **Leave a check behind.** Non-trivial logic gets the smallest runnable thing
 that fails when it breaks — see `tools/disc/test_carve.py`,
 `tools/recomp/test_driver.py` and `tests/selftest/`. No frameworks.
+
+## Where your code comes from
+
+This repo is MIT, and it stays MIT only if every line in it is original or
+under a licence compatible with MIT. **Don't port code from a GPL emulator**,
+and don't write "our own" version with its source open beside you. That is
+derivation, and it would make this repo GPL. The ones most likely to be open
+while working on Lindbergh are the GPL emulators and loaders for the platform,
+QEMU, Wine and binutils. Running an emulator as a black box and comparing
+output is fine. So are hardware docs and measuring the game itself. Say in the
+PR where anything non-obvious came from.
 
 ## Running the checks
 

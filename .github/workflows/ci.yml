@@ -1,0 +1,25 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  checks:
+    # 32-bit MSVC: the runtime maps the guest at 0x08048000, which only exists
+    # in a 32-bit process. No game data is used; every check is self-contained.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install capstone
+      - run: python tools/disc/test_carve.py
+      - run: python tools/recomp/test_driver.py
+      - run: cmake -S . -B build -A Win32
+      - run: cmake --build build --config Release
+      - run: build/Release/lindbergh_rt_selftest.exe

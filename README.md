@@ -17,9 +17,9 @@
 **[Join the sp00nznet recomp Discord](https://discord.gg/CRpzGWZFcu)** — the
 community hub for sp00nznet's recomp projects.
 
-**Current version: v0.5.1 (September 2026).** A Lindbergh game boots and
-runs a full render loop; the frame it presents is still black. See
-[Status](#status).
+**Current version: v0.5.1 (September 2026), alpha.** Five games lift and
+build, two render their attract mode, and none is playable yet. See
+[Status](#status) and the [changelog](CHANGELOG.md).
 
 ---
 
@@ -145,33 +145,83 @@ read; preservation projects have published clean dumps of many Lindbergh
 titles, taken from original DVDs and cabinet hard discs with the keys their
 owners had.
 
-## Use
+## Getting Started
+
+The toolkit has no game of its own to launch. For a one-click route to a
+running title, use that title's repo. For example,
+[letsgojungle-lindbergh-recomp](https://github.com/sp00nznet/letsgojungle-lindbergh-recomp)
+pulls this toolkit in as a submodule. This section gets the toolkit itself
+built and checked on a clean Windows machine.
+
+1. **Install the prerequisites.**
+   * [Python 3.11](https://www.python.org/downloads/) (64-bit is fine, since only
+     the runtime has to be 32-bit). Use `py -3.11`, not `python`: on a fresh
+     Windows, `python` can open the Microsoft Store instead.
+   * Visual Studio 2022 (Community is enough) with **Desktop development with
+     C++**. It includes the 32-bit MSVC toolchain and CMake 3.20 or newer.
+   * Git.
+2. **Clone with the submodule.** The x86 lifter is
+   [pcrecomp](https://github.com/sp00nznet/pcrecomp), and nothing builds
+   without it.
+   ```powershell
+   git clone --recursive https://github.com/sp00nznet/lindberghrecomp
+   cd lindberghrecomp
+   ```
+   If you already cloned without `--recursive`, run
+   `git submodule update --init --recursive`.
+3. **Install capstone:** `py -3.11 -m pip install capstone`
+4. **Run the Python checks.** Expected output:
+   ```
+   > py -3.11 tools\disc\test_carve.py
+   ok: carve finds a nested ISO9660 and extracts it byte-exact
+   > py -3.11 tools\recomp\test_driver.py
+   [*] 1 functions in 1 translation units, 1 imports
+   ok: ELF32 -> PLT/syscall-aware x86 lift -> C
+   ```
+5. **Build and run the runtime self-check** (see
+   [Building from source](#building-from-source)). The last line should be
+   `ok: dispatch table, syscall layer, import names`.
+
+Trip-ups: a CMake error about a 64-bit build means `-A Win32` was left off.
+`pcrecomp submodule is missing` means step 2's submodule step was skipped.
+
+## Usage
 
 ```powershell
-git clone --recursive https://github.com/sp00nznet/lindberghrecomp
-cd lindberghrecomp
-
 # what is on a disc image
 py -3.11 -m tools disc "Let's Go Jungle (World) ... (Rev A).iso" -o out\
 
 # what an ELF needs
 py -3.11 -m tools elf game.elf
 
-# lift it
+# lift it to C (gen\ is gitignored; lifted source is never distributed)
 py -3.11 -m tools recomp game.elf gen\
+```
 
-# the checks
-py -3.11 tools\disc\test_carve.py
-py -3.11 tools\recomp\test_driver.py
-cmake -S . -B build -A Win32; cmake --build build --config Release
+A game repo then links the runtime against its generated tree:
+
+```cmake
+add_subdirectory(lindberghrecomp)
+add_executable(mygame src/host.c ${GENERATED})
+lindbergh_runtime(mygame games/mygame/generated)
+```
+
+The runtime's switches (`LINDBERGH_SHOT`, `LINDBERGH_DUMP_FP` and the rest)
+are in [docs/instruments.md](docs/instruments.md).
+
+## Building from source
+
+```powershell
+cmake -S . -B build -A Win32
+cmake --build build --config Release
 .\build\Release\lindbergh_rt_selftest.exe
 ```
 
-Needs Python 3.11 with `capstone`, and a 32-bit MSVC toolchain. The 32-bit part
-is not negotiable: the CPU model is flat — a guest register holds a real host
-address — and the game maps at `0x08048000`, which only exists as an address in
-a 32-bit process. The CMake refuses a 64-bit configure rather than let you find
-out later.
+The 32-bit build is not negotiable. The CPU model is flat (a guest register
+holds a real host address), and the game maps at `0x08048000`, an address that
+only exists in a 32-bit process. CMake refuses a 64-bit configure so you don't
+find this out later. CI runs these checks plus the Python checks on every push
+and PR.
 
 ## Layout
 
@@ -191,9 +241,14 @@ docs/
   disc-format.md  what is actually on the disc, measured
 ```
 
-## Legal
+## License
 
 MIT, and original work throughout. **No game data, no keys, and no
 circumvention of anything.** The tools here read a disc's unencrypted
 filesystem structure and translate x86 machine code you supply. Lindbergh
 titles are © Sega; this is an independent, non-commercial preservation project.
+
+## Contributors
+
+The people who have found and fixed things here are credited in
+[CONTRIBUTORS.md](CONTRIBUTORS.md). What's next is in [ROADMAP.md](ROADMAP.md).
