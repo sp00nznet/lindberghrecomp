@@ -28,7 +28,9 @@
 #include "lindbergh_rt.h"
 
 #define CG_TOKEN_CTX  0x43470001u      /* "CG" */
-#define MAX_SHADERS   512
+/* Initial D 4 compiles past 500 programs during init, so 512 ran out and the
+ * late shaders (dof among them) went unindexed. Running out is reported below. */
+#define MAX_SHADERS   2048
 
 typedef struct {
     char *path;         /* which file this came from, for diagnosis */
@@ -228,6 +230,9 @@ static void index_shaders(void)
     snprintf(dir, sizeof dir, "%s/extraShader", tea);
     index_dir(dir, 0);
     fprintf(stderr, "[cg] indexed %d precompiled shaders\n", g_sh_n);
+    if (g_sh_n >= MAX_SHADERS)
+        fprintf(stderr, "[cg] shader table full at %d - the rest of the disc is "
+                        "unindexed; raise MAX_SHADERS\n", MAX_SHADERS);
     {
         /* How discriminating is the defines key actually? If most shaders
          * share one value it is not a key at all, and the match degenerates to
